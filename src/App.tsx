@@ -12,13 +12,9 @@ import AdminShops from "./pages/admin/Shops";
 import AdminManagers from "./pages/admin/Managers";
 import AdminIncoming from "./pages/admin/Incoming";
 import AdminDispatch from "./pages/admin/Dispatch";
-import AdminReturns from "./pages/admin/Returns";
-import AdminReports from "./pages/admin/Reports";
 import ManagerProducts from "./pages/manager/Products";
 import ManagerShops from "./pages/manager/Shops";
-import ManagerOrders from "./pages/manager/Orders";
-import ManagerReturns from "./pages/manager/Returns";
-import ManagerReports from "./pages/manager/Reports";
+import ManagerDispatches from "./pages/manager/Dispatches";
 
 const queryClient = new QueryClient();
 
@@ -38,16 +34,12 @@ const App = () => (
             <Route path="managers" element={<AdminManagers />} />
             <Route path="incoming" element={<AdminIncoming />} />
             <Route path="dispatch" element={<AdminDispatch />} />
-            <Route path="returns" element={<AdminReturns />} />
-            <Route path="reports" element={<AdminReports />} />
           </Route>
           <Route path="/manager" element={<Manager />}>
-            <Route index element={<Navigate to="/manager/products" replace />} />
+            <Route index element={<Navigate to="/manager/dispatches" replace />} />
             <Route path="products" element={<ManagerProducts />} />
             <Route path="shops" element={<ManagerShops />} />
-            <Route path="orders" element={<ManagerOrders />} />
-            <Route path="returns" element={<ManagerReturns />} />
-            <Route path="reports" element={<ManagerReports />} />
+            <Route path="dispatches" element={<ManagerDispatches />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>

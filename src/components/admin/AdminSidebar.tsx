@@ -1,4 +1,4 @@
-import { Package, Store, Users, Truck, RotateCcw, FileText, LogOut, ArrowDownToLine } from "lucide-react";
+import { Package, Store, Users, Truck, LogOut, ArrowDownToLine } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Sidebar,
@@ -21,8 +21,6 @@ const items = [
   { title: "Менеджеры", url: "/admin/managers", icon: Users },
   { title: "Поступление", url: "/admin/incoming", icon: ArrowDownToLine },
   { title: "Отправка", url: "/admin/dispatch", icon: Truck },
-  { title: "Возврат", url: "/admin/returns", icon: RotateCcw },
-  { title: "Отчеты", url: "/admin/reports", icon: FileText },
 ];
 
 export function AdminSidebar() {

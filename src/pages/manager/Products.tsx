@@ -3,45 +3,49 @@ import { api } from "@/lib/api";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default function ManagerProducts() {
-  const { data: products = [] } = useQuery({
-    queryKey: ["managerProducts"],
-    queryFn: () => api.getManagerProducts(),
-  });
+interface ManagerStockItem {
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  price: number;
+}
 
-  // Filter only non-return products
-  const regularProducts = (products as any[]).filter((p: any) => !p.is_return);
+export default function ManagerProducts() {
+  const { data: stock = [] } = useQuery<ManagerStockItem[]>({
+    queryKey: ["manager-stock"],
+    queryFn: () => api.getManagerStock(),
+  });
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Мои товары</h1>
+      <h1 className="text-3xl font-bold">Мой склад</h1>
 
       <Card>
         <CardHeader>
-          <CardTitle>Товары в наличии</CardTitle>
+          <CardTitle>Остатки</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Название</TableHead>
+                <TableHead>Товар</TableHead>
                 <TableHead>Количество</TableHead>
                 <TableHead>Цена</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {regularProducts.length === 0 ? (
+              {stock.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    Нет товаров
+                    Нет остатков
                   </TableCell>
                 </TableRow>
               ) : (
-                regularProducts.map((product: any) => (
-                  <TableRow key={product.id}>
-                    <TableCell>{product.name}</TableCell>
-                    <TableCell>{product.quantity}</TableCell>
-                    <TableCell>{product.price} ₸</TableCell>
+                stock.map((item) => (
+                  <TableRow key={item.product_id}>
+                    <TableCell>{item.product_name}</TableCell>
+                    <TableCell>{item.quantity.toFixed(2)}</TableCell>
+                    <TableCell>{item.price.toFixed(2)} ₸</TableCell>
                   </TableRow>
                 ))
               )}

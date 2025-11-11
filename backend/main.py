@@ -1,16 +1,18 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+import os
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import List, Optional
+
+import jwt
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
-from typing import List, Optional
-import os
-import secrets
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session, selectinload
+
 import models
 import schemas
 from database import engine, get_db
-from passlib.context import CryptContext
-import jwt
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
@@ -20,35 +22,38 @@ app = FastAPI(title="Confectionery Management System")
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://192.168.8.98:8080"],  # React dev server
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Security
-SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Helper functions
-def verify_password(plain_password, hashed_password):
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
-def get_password_hash(password):
+
+def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
-def create_access_token(data: dict):
+
+def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -56,20 +61,39 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username: Optional[str] = payload.get("sub")
         if username is None:
             raise credentials_exception
     except jwt.PyJWTError:
         raise credentials_exception
-    
+
     user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise credentials_exception
     return user
 
+
+def admin_required(current_user: models.User = Depends(get_current_user)) -> models.User:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+
+def manager_required(current_user: models.User = Depends(get_current_user)) -> models.User:
+    if current_user.role != "manager":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+    return current_user
+
+
+def to_decimal(value: float | Decimal) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
 # Initialize admin user
 @app.on_event("startup")
-def startup_event():
+def startup_event() -> None:
     db = next(get_db())
     admin = db.query(models.User).filter(models.User.username == "admin").first()
     if not admin:
@@ -78,12 +102,12 @@ def startup_event():
             password=get_password_hash("admin"),
             role="admin",
             full_name="Administrator",
-            is_active=True
+            is_active=True,
         )
         db.add(admin)
         db.commit()
 
-# Auth endpoints
+
 @app.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == form_data.username).first()
@@ -96,512 +120,480 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is not active"
+            detail="Account is not active",
         )
-    
+
     access_token = create_access_token(data={"sub": user.username, "role": user.role})
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "role": user.role,
-        "full_name": user.full_name
+        "full_name": user.full_name,
     }
+
 
 @app.get("/me")
 def get_me(current_user: models.User = Depends(get_current_user)):
     return {
         "username": current_user.username,
         "role": current_user.role,
-        "full_name": current_user.full_name
+        "full_name": current_user.full_name,
     }
 
-# Products endpoints
-@app.get("/products", response_model=List[schemas.Product])
+
+@app.get("/products", response_model=List[schemas.ProductOut])
 def get_products(
-    is_return: Optional[bool] = None,
+    include_archived: bool = False,
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
 ):
     query = db.query(models.Product)
-    if current_user.role == "manager":
-        query = query.filter(models.Product.manager_id == current_user.id)
-    if is_return is not None:
-        query = query.filter(models.Product.is_return == is_return)
-    return query.all()
+    if not include_archived:
+        query = query.filter(models.Product.is_archived.is_(False))
+    return query.order_by(models.Product.name.asc()).all()
 
-@app.post("/products", response_model=schemas.Product)
+
+@app.post("/products", response_model=schemas.ProductOut, status_code=status.HTTP_201_CREATED)
 def create_product(
     product: schemas.ProductCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    db_product = models.Product(**product.dict())
+    existing = db.query(models.Product).filter(models.Product.name == product.name).first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Product with this name already exists")
+
+    db_product = models.Product(
+        name=product.name,
+        price=to_decimal(product.price),
+        quantity=to_decimal(product.quantity),
+    )
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
     return db_product
 
-@app.put("/products/{product_id}")
+
+@app.put("/products/{product_id}", response_model=schemas.ProductOut)
 def update_product(
     product_id: int,
-    product: schemas.ProductCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    product_update: schemas.ProductUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
     db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not db_product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    for key, value in product.dict().items():
-        setattr(db_product, key, value)
-    
-    db.commit()
-    return {"message": "Product updated"}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
-@app.delete("/products/{product_id}")
-def delete_product(
+    if product_update.name and product_update.name != db_product.name:
+        exists = db.query(models.Product).filter(models.Product.name == product_update.name).first()
+        if exists:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Product with this name already exists")
+        db_product.name = product_update.name
+
+    if product_update.price is not None:
+        db_product.price = to_decimal(product_update.price)
+    if product_update.quantity is not None:
+        db_product.quantity = to_decimal(product_update.quantity)
+    if product_update.is_archived is not None:
+        db_product.is_archived = product_update.is_archived
+
+    db.commit()
+    db.refresh(db_product)
+    return db_product
+
+
+@app.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_product(
     product_id: int,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
 ):
     db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
     if not db_product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    # Check authorization
-    if current_user.role == "admin" and db_product.manager_id is None:
-        # Admin can delete admin products
-        pass
-    elif current_user.role == "manager" and db_product.manager_id == current_user.id:
-        # Manager can delete their own products
-        pass
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Check if product is referenced in dispatches, orders, or returns
-    has_dispatches = db.query(models.Dispatch).filter(models.Dispatch.product_id == product_id).first()
-    has_orders = db.query(models.Order).filter(models.Order.product_id == product_id).first()
-    has_returns = db.query(models.Return).filter(models.Return.product_id == product_id).first()
-    
-    if has_dispatches or has_orders or has_returns:
-        raise HTTPException(
-            status_code=400, 
-            detail="Cannot delete product with existing transactions. Please archive it instead."
-        )
-    
-    db.delete(db_product)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    db_product.is_archived = True
     db.commit()
-    return {"message": "Product deleted"}
 
-# Shops endpoints
-@app.get("/shops", response_model=List[schemas.Shop])
-def get_shops(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Shop).all()
 
-@app.post("/shops", response_model=schemas.Shop)
+@app.get("/products/search", response_model=List[schemas.SearchProductOut])
+def search_products(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    query = (
+        db.query(models.Product)
+        .filter(models.Product.is_archived.is_(False))
+        .filter(models.Product.name.ilike(f"%{q}%"))
+        .order_by(models.Product.name.asc())
+        .limit(limit)
+    )
+    return query.all()
+
+
+@app.post("/incoming", response_model=schemas.IncomingOut, status_code=status.HTTP_201_CREATED)
+def create_incoming(
+    incoming: schemas.IncomingCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
+):
+    if not incoming.items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No incoming items provided")
+
+    db_incoming = models.Incoming(created_by_admin_id=current_user.id)
+    db.add(db_incoming)
+
+    try:
+        db.flush()
+        for item in incoming.items:
+            product = (
+                db.query(models.Product)
+                .filter(models.Product.id == item.product_id, models.Product.is_archived.is_(False))
+                .first()
+            )
+            if not product:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product {item.product_id} not found")
+
+            product.quantity = to_decimal(product.quantity) + to_decimal(item.quantity)
+
+            incoming_item = models.IncomingItem(
+                incoming_id=db_incoming.id,
+                product_id=item.product_id,
+                quantity=to_decimal(item.quantity),
+                price_at_time=to_decimal(item.price_at_time),
+            )
+            db.add(incoming_item)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(db_incoming)
+    db_incoming = (
+        db.query(models.Incoming)
+        .options(selectinload(models.Incoming.items))
+        .filter(models.Incoming.id == db_incoming.id)
+        .first()
+    )
+    return db_incoming
+
+
+@app.post("/dispatch", response_model=schemas.DispatchOut, status_code=status.HTTP_201_CREATED)
+def create_dispatch(
+    dispatch: schemas.DispatchCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
+):
+    if not dispatch.items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No dispatch items provided")
+
+    manager = db.query(models.User).filter(models.User.id == dispatch.manager_id, models.User.role == "manager").first()
+    if not manager:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manager not found")
+
+    db_dispatch = models.Dispatch(manager_id=dispatch.manager_id, status=schemas.DispatchStatus.pending.value)
+    db.add(db_dispatch)
+
+    try:
+        db.flush()
+        for item in dispatch.items:
+            product = (
+                db.query(models.Product)
+                .filter(models.Product.id == item.product_id, models.Product.is_archived.is_(False))
+                .first()
+            )
+            if not product:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product {item.product_id} not found")
+
+            dispatch_item = models.DispatchItem(
+                dispatch_id=db_dispatch.id,
+                product_id=item.product_id,
+                quantity=to_decimal(item.quantity),
+                price=to_decimal(item.price),
+            )
+            db.add(dispatch_item)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    dispatch_with_items = (
+        db.query(models.Dispatch)
+        .options(selectinload(models.Dispatch.items).selectinload(models.DispatchItem.product))
+        .filter(models.Dispatch.id == db_dispatch.id)
+        .first()
+    )
+    return map_dispatch_to_schema(dispatch_with_items)
+
+
+@app.get("/dispatch", response_model=List[schemas.DispatchOut])
+def list_dispatches(
+    status_filter: Optional[schemas.DispatchStatus] = Query(default=None, alias="status"),
+    manager_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    query = db.query(models.Dispatch).options(
+        selectinload(models.Dispatch.items).selectinload(models.DispatchItem.product)
+    )
+
+    if current_user.role == "manager":
+        query = query.filter(models.Dispatch.manager_id == current_user.id)
+    elif manager_id:
+        query = query.filter(models.Dispatch.manager_id == manager_id)
+
+    if status_filter:
+        query = query.filter(models.Dispatch.status == status_filter.value)
+
+    dispatches = query.order_by(models.Dispatch.created_at.desc()).all()
+    return [map_dispatch_to_schema(d) for d in dispatches]
+
+
+@app.post("/dispatch/{dispatch_id}/accept", response_model=schemas.DispatchOut)
+def accept_dispatch(
+    dispatch_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(manager_required),
+):
+    dispatch = (
+        db.query(models.Dispatch)
+        .options(selectinload(models.Dispatch.items).selectinload(models.DispatchItem.product))
+        .filter(models.Dispatch.id == dispatch_id)
+        .first()
+    )
+
+    if not dispatch or dispatch.manager_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispatch not found")
+
+    if dispatch.status != schemas.DispatchStatus.pending.value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dispatch already processed")
+
+    try:
+        for item in dispatch.items:
+            product = db.query(models.Product).filter(models.Product.id == item.product_id).with_for_update().first()
+            if not product or product.is_archived:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product {item.product_id} not available")
+
+            available = to_decimal(product.quantity)
+            required = to_decimal(item.quantity)
+            if available < required:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "product_id": item.product_id,
+                        "available": float(available),
+                        "required": float(required),
+                    },
+                )
+
+            product.quantity = available - required
+
+            stock = (
+                db.query(models.ManagerStock)
+                .filter(
+                    models.ManagerStock.manager_id == current_user.id,
+                    models.ManagerStock.product_id == item.product_id,
+                )
+                .first()
+            )
+            if stock:
+                stock.quantity = to_decimal(stock.quantity) + required
+            else:
+                stock = models.ManagerStock(
+                    manager_id=current_user.id,
+                    product_id=item.product_id,
+                    quantity=required,
+                )
+                db.add(stock)
+
+        dispatch.status = schemas.DispatchStatus.sent.value
+        dispatch.sent_at = datetime.utcnow()
+        db.commit()
+    except HTTPException as exc:
+        db.rollback()
+        raise exc
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(dispatch)
+    dispatch = (
+        db.query(models.Dispatch)
+        .options(selectinload(models.Dispatch.items).selectinload(models.DispatchItem.product))
+        .filter(models.Dispatch.id == dispatch_id)
+        .first()
+    )
+    return map_dispatch_to_schema(dispatch)
+
+
+@app.get("/manager/stock", response_model=List[schemas.ManagerStockOut])
+def get_manager_stock(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(manager_required),
+):
+    stocks = (
+        db.query(models.ManagerStock)
+        .options(selectinload(models.ManagerStock.product))
+        .filter(models.ManagerStock.manager_id == current_user.id)
+        .order_by(models.ManagerStock.id.asc())
+        .all()
+    )
+    result: List[schemas.ManagerStockOut] = []
+    for stock in stocks:
+        result.append(
+            schemas.ManagerStockOut(
+                product_id=stock.product_id,
+                product_name=stock.product.name if stock.product else "",
+                quantity=float(stock.quantity),
+                price=float(stock.product.price) if stock.product else 0.0,
+            )
+        )
+    return result
+
+
+@app.post("/shops", response_model=schemas.ShopOut, status_code=status.HTTP_201_CREATED)
 def create_shop(
     shop: schemas.ShopCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(manager_required),
 ):
-    db_shop = models.Shop(**shop.dict())
+    db_shop = models.Shop(
+        name=shop.name,
+        address=shop.address,
+        phone=shop.phone,
+        fridge_number=shop.fridge_number,
+        manager_id=current_user.id,
+    )
     db.add(db_shop)
     db.commit()
     db.refresh(db_shop)
     return db_shop
 
-# Managers endpoints
+
+@app.get("/shops", response_model=List[schemas.ShopAdminOut])
+def list_shops(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
+):
+    shops = (
+        db.query(models.Shop)
+        .options(selectinload(models.Shop.manager))
+        .order_by(models.Shop.created_at.desc())
+        .all()
+    )
+    result: List[schemas.ShopAdminOut] = []
+    for shop in shops:
+        result.append(
+            schemas.ShopAdminOut(
+                id=shop.id,
+                name=shop.name,
+                address=shop.address,
+                phone=shop.phone,
+                fridge_number=shop.fridge_number,
+                created_at=shop.created_at,
+                manager_id=shop.manager_id,
+                manager_full_name=shop.manager.full_name if shop.manager else None,
+                manager_username=shop.manager.username if shop.manager else None,
+            )
+        )
+    return result
+
+
+@app.get("/shops/me", response_model=List[schemas.ShopOut])
+def list_my_shops(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(manager_required),
+):
+    return (
+        db.query(models.Shop)
+        .filter(models.Shop.manager_id == current_user.id)
+        .order_by(models.Shop.created_at.desc())
+        .all()
+    )
+
+
 @app.get("/managers", response_model=List[schemas.Manager])
-def get_managers(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
+def get_managers(db: Session = Depends(get_db), current_user: models.User = Depends(admin_required)):
     return db.query(models.User).filter(models.User.role == "manager").all()
+
 
 @app.post("/managers", response_model=schemas.Manager)
 def create_manager(
     manager: schemas.ManagerCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
     existing_user = db.query(models.User).filter(models.User.username == manager.username).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail="Username already exists")
-    
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
+
     db_manager = models.User(
         username=manager.username,
         password=get_password_hash(manager.password),
         role="manager",
         full_name=manager.full_name,
-        is_active=manager.is_active
+        is_active=manager.is_active,
     )
     db.add(db_manager)
     db.commit()
     db.refresh(db_manager)
     return db_manager
 
+
 @app.put("/managers/{manager_id}")
 def update_manager(
     manager_id: int,
     manager: schemas.ManagerUpdate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(admin_required),
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
     db_manager = db.query(models.User).filter(models.User.id == manager_id, models.User.role == "manager").first()
     if not db_manager:
-        raise HTTPException(status_code=404, detail="Manager not found")
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manager not found")
+
     if manager.full_name:
         db_manager.full_name = manager.full_name
     if manager.is_active is not None:
         db_manager.is_active = manager.is_active
     if manager.password:
         db_manager.password = get_password_hash(manager.password)
-    
+
     db.commit()
     return {"message": "Manager updated"}
 
-# Dispatch endpoints
-@app.post("/dispatch")
-def create_dispatch(
-    dispatch: schemas.DispatchCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Check manager exists
-    manager = db.query(models.User).filter(models.User.id == dispatch.manager_id).first()
-    if not manager:
-        raise HTTPException(status_code=404, detail="Manager not found")
-    
-    # Create dispatch records and update inventory
+
+def map_dispatch_to_schema(dispatch: models.Dispatch) -> schemas.DispatchOut:
+    if dispatch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispatch not found")
+
+    items = []
     for item in dispatch.items:
-        # Check product availability (only admin products where manager_id is NULL)
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id,
-            models.Product.manager_id.is_(None),
-            models.Product.is_return == False
-        ).first()
-        
-        if not product:
-            raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found in admin inventory")
-        
-        if product.quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"Insufficient quantity for product {product.name}")
-        
-        # Deduct from admin inventory
-        product.quantity -= item.quantity
-        
-        # Find or create manager product
-        manager_product = db.query(models.Product).filter(
-            models.Product.name == product.name,
-            models.Product.price == product.price,
-            models.Product.manager_id == dispatch.manager_id,
-            models.Product.is_return == False
-        ).first()
-        
-        if manager_product:
-            # Update existing manager product
-            manager_product.quantity += item.quantity
-        else:
-            # Create new product for manager
-            manager_product = models.Product(
-                name=product.name,
-                quantity=item.quantity,
-                price=product.price,
-                manager_id=dispatch.manager_id,
-                is_return=False
+        items.append(
+            schemas.DispatchItemOut(
+                id=item.id,
+                product_id=item.product_id,
+                product_name=item.product.name if item.product else "",
+                quantity=float(item.quantity),
+                price=float(item.price),
             )
-            db.add(manager_product)
-        
-        # Create dispatch record
-        db_dispatch = models.Dispatch(
-            manager_id=dispatch.manager_id,
-            product_id=item.product_id,
-            quantity=item.quantity,
-            price=product.price
         )
-        db.add(db_dispatch)
-    
-    db.commit()
-    return {"message": "Dispatch created successfully"}
+    return schemas.DispatchOut(
+        id=dispatch.id,
+        manager_id=dispatch.manager_id,
+        status=schemas.DispatchStatus(dispatch.status),
+        created_at=dispatch.created_at,
+        sent_at=dispatch.sent_at,
+        cancelled_at=dispatch.cancelled_at,
+        items=items,
+    )
 
-# Orders endpoints
-@app.post("/orders")
-def create_order(
-    order: schemas.OrderCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role != "manager":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Check shop exists
-    shop = db.query(models.Shop).filter(models.Shop.id == order.shop_id).first()
-    if not shop:
-        raise HTTPException(status_code=404, detail="Shop not found")
-    
-    for item in order.items:
-        # Check product availability
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id,
-            models.Product.manager_id == current_user.id
-        ).first()
-        
-        if not product or product.quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"Insufficient quantity for product {item.product_id}")
-        
-        # Deduct from manager inventory
-        product.quantity -= item.quantity
-        
-        # Create order record
-        db_order = models.Order(
-            manager_id=current_user.id,
-            shop_id=order.shop_id,
-            product_id=item.product_id,
-            quantity=item.quantity,
-            price=item.price,
-            refrigerator_number=order.refrigerator_number
-        )
-        db.add(db_order)
-    
-    db.commit()
-    return {"message": "Order created successfully"}
-
-# Returns endpoints
-@app.post("/returns")
-def create_return(
-    return_data: schemas.ReturnCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role != "manager":
-        raise HTTPException(status_code=403, detail="Only managers can create returns")
-    
-    for item in return_data.items:
-        # Get product info
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id,
-            models.Product.manager_id == current_user.id
-        ).first()
-        
-        if not product:
-            raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found in your inventory")
-        
-        if product.quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"Insufficient quantity for product {product.name}")
-        
-        # Deduct from manager's regular inventory
-        product.quantity -= item.quantity
-        
-        # Find or create return product in manager's inventory
-        return_product = db.query(models.Product).filter(
-            models.Product.name == product.name,
-            models.Product.manager_id == current_user.id,
-            models.Product.is_return == True
-        ).first()
-        
-        if return_product:
-            return_product.quantity += item.quantity
-        else:
-            return_product = models.Product(
-                name=product.name,
-                quantity=item.quantity,
-                price=product.price,
-                manager_id=current_user.id,
-                is_return=True
-            )
-            db.add(return_product)
-        
-        # Create return record for admin reports
-        db_return = models.Return(
-            manager_id=current_user.id,
-            shop_id=return_data.shop_id,
-            product_id=item.product_id,
-            quantity=item.quantity
-        )
-        db.add(db_return)
-    
-    db.commit()
-    return {"message": "Return created successfully"}
-
-# Reports endpoints
-@app.get("/reports/products")
-def get_product_report(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    total_products = db.query(models.Product).filter(
-        models.Product.manager_id.is_(None),
-        models.Product.is_return == False
-    ).count()
-    
-    total_returns = db.query(models.Return).count()
-    
-    dispatch_query = db.query(models.Dispatch)
-    if start_date:
-        dispatch_query = dispatch_query.filter(models.Dispatch.created_at >= start_date)
-    if end_date:
-        dispatch_query = dispatch_query.filter(models.Dispatch.created_at <= end_date)
-    
-    dispatches = dispatch_query.all()
-    total_dispatched = sum(d.quantity for d in dispatches)
-    
-    return {
-        "total_products": total_products,
-        "total_returns": total_returns,
-        "total_dispatched": total_dispatched
-    }
-
-@app.get("/reports/manager/{manager_id}")
-def get_manager_report(
-    manager_id: int,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    dispatch_query = db.query(models.Dispatch).filter(models.Dispatch.manager_id == manager_id)
-    order_query = db.query(models.Order).filter(models.Order.manager_id == manager_id)
-    return_query = db.query(models.Return).filter(models.Return.manager_id == manager_id)
-    
-    if start_date:
-        dispatch_query = dispatch_query.filter(models.Dispatch.created_at >= start_date)
-        order_query = order_query.filter(models.Order.created_at >= start_date)
-        return_query = return_query.filter(models.Return.created_at >= start_date)
-    if end_date:
-        dispatch_query = dispatch_query.filter(models.Dispatch.created_at <= end_date)
-        order_query = order_query.filter(models.Order.created_at <= end_date)
-        return_query = return_query.filter(models.Return.created_at <= end_date)
-    
-    dispatches = dispatch_query.all()
-    orders = order_query.all()
-    returns = return_query.all()
-    
-    # Get product names for dispatches
-    dispatches_with_names = []
-    for d in dispatches:
-        product = db.query(models.Product).filter(models.Product.id == d.product_id).first()
-        dispatches_with_names.append({
-            "id": d.id,
-            "quantity": d.quantity,
-            "price": d.price,
-            "created_at": d.created_at,
-            "product_name": product.name if product else "Unknown"
-        })
-    
-    return {
-        "manager_id": manager_id,
-        "total_received": sum(d.quantity for d in dispatches),
-        "total_delivered": sum(o.quantity for o in orders),
-        "total_returns": sum(r.quantity for r in returns),
-        "dispatches": dispatches_with_names,
-        "orders": orders,
-        "returns": returns
-    }
-
-@app.get("/reports/manager-summary")
-def get_manager_summary_report(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role == "admin":
-        managers = db.query(models.User).filter(models.User.role == "manager").all()
-    else:
-        managers = [current_user]
-    
-    summary = []
-    for manager in managers:
-        dispatch_query = db.query(models.Dispatch).filter(models.Dispatch.manager_id == manager.id)
-        order_query = db.query(models.Order).filter(models.Order.manager_id == manager.id)
-        return_query = db.query(models.Return).filter(models.Return.manager_id == manager.id)
-        
-        if start_date:
-            dispatch_query = dispatch_query.filter(models.Dispatch.created_at >= start_date)
-            order_query = order_query.filter(models.Order.created_at >= start_date)
-            return_query = return_query.filter(models.Return.created_at >= start_date)
-        if end_date:
-            dispatch_query = dispatch_query.filter(models.Dispatch.created_at <= end_date)
-            order_query = order_query.filter(models.Order.created_at <= end_date)
-            return_query = return_query.filter(models.Return.created_at <= end_date)
-        
-        dispatches = dispatch_query.all()
-        orders = order_query.all()
-        returns = return_query.all()
-        
-        summary.append({
-            "manager_id": manager.id,
-            "manager_name": manager.full_name,
-            "total_received": sum(d.quantity for d in dispatches),
-            "total_delivered": sum(o.quantity for o in orders),
-            "total_returns": sum(r.quantity for r in returns)
-        })
-    
-    return summary
-
-@app.get("/reports/returns")
-def get_returns_report(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    manager_id: Optional[int] = None,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    query = db.query(models.Return)
-    
-    if start_date:
-        query = query.filter(models.Return.created_at >= start_date)
-    if end_date:
-        query = query.filter(models.Return.created_at <= end_date)
-    if manager_id:
-        query = query.filter(models.Return.manager_id == manager_id)
-    
-    returns = query.order_by(models.Return.created_at.desc()).all()
-    result = []
-    
-    for return_item in returns:
-        manager = db.query(models.User).filter(models.User.id == return_item.manager_id).first()
-        shop = db.query(models.Shop).filter(models.Shop.id == return_item.shop_id).first()
-        product = db.query(models.Product).filter(models.Product.id == return_item.product_id).first()
-        
-        result.append({
-            "id": return_item.id,
-            "created_at": return_item.created_at.isoformat(),
-            "manager_name": manager.full_name if manager else "Unknown",
-            "manager_username": manager.username if manager else "Unknown",
-            "shop_name": shop.name if shop else "Unknown",
-            "product_name": product.name if product else "Unknown",
-            "quantity": return_item.quantity
-        })
-    
-    return result
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
