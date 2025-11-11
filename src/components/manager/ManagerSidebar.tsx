@@ -1,4 +1,4 @@
-import { Package, Store, ShoppingCart, RotateCcw, FileText, LogOut } from "lucide-react";
+import { Package, Store, Truck, LogOut } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Sidebar,
@@ -18,9 +18,7 @@ import { Button } from "@/components/ui/button";
 const items = [
   { title: "Товары", url: "/manager/products", icon: Package },
   { title: "Магазины", url: "/manager/shops", icon: Store },
-  { title: "Заказ", url: "/manager/orders", icon: ShoppingCart },
-  { title: "Возврат", url: "/manager/returns", icon: RotateCcw },
-  { title: "Отчет", url: "/manager/reports", icon: FileText },
+  { title: "Отправки", url: "/manager/dispatches", icon: Truck },
 ];
 
 export function ManagerSidebar() {
