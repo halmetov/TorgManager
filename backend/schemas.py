@@ -1,0 +1,84 @@
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime
+
+class ProductBase(BaseModel):
+    name: str
+    quantity: int
+    price: float
+
+class ProductCreate(ProductBase):
+    is_return: bool = False
+
+class Product(ProductBase):
+    id: int
+    manager_id: Optional[int]
+    is_return: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ShopBase(BaseModel):
+    name: str
+    address: str
+    phone: str
+    refrigerator_number: str
+
+class ShopCreate(ShopBase):
+    pass
+
+class Shop(ShopBase):
+    id: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ManagerBase(BaseModel):
+    username: str
+    full_name: str
+
+class ManagerCreate(ManagerBase):
+    password: str
+    is_active: bool = True
+
+class ManagerUpdate(BaseModel):
+    full_name: Optional[str] = None
+    password: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class Manager(ManagerBase):
+    id: int
+    role: str
+    is_active: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DispatchItem(BaseModel):
+    product_id: int
+    quantity: int
+
+class DispatchCreate(BaseModel):
+    manager_id: int
+    items: List[DispatchItem]
+
+class OrderItem(BaseModel):
+    product_id: int
+    quantity: int
+    price: float
+
+class OrderCreate(BaseModel):
+    shop_id: int
+    refrigerator_number: str
+    items: List[OrderItem]
+
+class ReturnItem(BaseModel):
+    product_id: int
+    quantity: int
+
+class ReturnCreate(BaseModel):
+    shop_id: int
+    items: List[ReturnItem]
