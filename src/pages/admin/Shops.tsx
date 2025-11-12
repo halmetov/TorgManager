@@ -1,101 +1,98 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus } from "lucide-react";
+
+interface Shop {
+  id: number;
+  name: string;
+  address: string;
+  phone: string;
+  refrigerator_number: string;
+  manager_id: number | null;
+  manager_name: string | null;
+}
+
+interface ManagerOption {
+  id: number;
+  username: string;
+  full_name: string | null;
+}
 
 export default function AdminShops() {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [formData, setFormData] = useState({
-    name: "",
-    address: "",
-    phone: "",
-    refrigerator_number: "",
+  const [selectedManager, setSelectedManager] = useState<string>("all");
+
+  const managerId = selectedManager === "all" ? undefined : Number(selectedManager);
+
+  const {
+    data: managers = [],
+    error: managersError,
+  } = useQuery({
+    queryKey: ["managers"],
+    queryFn: () => api.getManagers(),
   });
 
-  const { data: shops = [] } = useQuery({
-    queryKey: ["shops"],
-    queryFn: () => api.getShops(),
+  const {
+    data: shops = [],
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["shops", "admin", { managerId: managerId ?? "all" }],
+    queryFn: () => api.getShops(managerId !== undefined ? { managerId } : undefined),
   });
 
-  const createMutation = useMutation({
-    mutationFn: (data: any) => api.createShop(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["shops"] });
-      toast({ title: "Магазин добавлен" });
-      setOpen(false);
-      setFormData({ name: "", address: "", phone: "", refrigerator_number: "" });
-    },
-  });
+  useEffect(() => {
+    if (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить магазины";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [error, toast]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    createMutation.mutate(formData);
-  };
+  useEffect(() => {
+    if (managersError) {
+      const message = managersError instanceof Error ? managersError.message : "Не удалось загрузить менеджеров";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [managersError, toast]);
+
+  const managerOptions = useMemo(() => {
+    if (!Array.isArray(managers)) {
+      return [] as ManagerOption[];
+    }
+    return managers as ManagerOption[];
+  }, [managers]);
+
+  const shopsList = useMemo(() => {
+    if (!Array.isArray(shops)) {
+      return [] as Shop[];
+    }
+    return shops as Shop[];
+  }, [shops]);
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <h1 className="text-3xl font-bold">Магазины</h1>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4" />
-              Добавить магазин
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Новый магазин</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <Label>Название</Label>
-                <Input
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <Label>Адрес</Label>
-                <Input
-                  value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <Label>Телефон</Label>
-                <Input
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <Label>Номер холодильника</Label>
-                <Input
-                  value={formData.refrigerator_number}
-                  onChange={(e) => setFormData({ ...formData, refrigerator_number: e.target.value })}
-                  placeholder="123"
-                  required
-                />
-              </div>
-              <Button type="submit" className="w-full">
-                Добавить
-              </Button>
-            </form>
-          </DialogContent>
-        </Dialog>
+        <div className="flex w-full flex-col gap-2 md:w-72">
+          <span className="text-sm font-medium text-muted-foreground">Фильтр по менеджеру</span>
+          <Select value={selectedManager} onValueChange={setSelectedManager}>
+            <SelectTrigger>
+              <SelectValue placeholder="Все менеджеры" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Все менеджеры</SelectItem>
+              {managerOptions.map((manager) => (
+                <SelectItem key={manager.id} value={String(manager.id)}>
+                  {manager.full_name?.trim() || manager.username}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <Card>
@@ -110,17 +107,33 @@ export default function AdminShops() {
                 <TableHead>Адрес</TableHead>
                 <TableHead>Телефон</TableHead>
                 <TableHead>№ Холодильника</TableHead>
+                <TableHead>Менеджер</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(shops as any[]).map((shop: any) => (
-                <TableRow key={shop.id}>
-                  <TableCell>{shop.name}</TableCell>
-                  <TableCell>{shop.address}</TableCell>
-                  <TableCell>{shop.phone}</TableCell>
-                  <TableCell>{shop.refrigerator_number}</TableCell>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                    Загрузка...
+                  </TableCell>
                 </TableRow>
-              ))}
+              ) : shopsList.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                    Магазины не найдены
+                  </TableCell>
+                </TableRow>
+              ) : (
+                shopsList.map((shop) => (
+                  <TableRow key={shop.id}>
+                    <TableCell>{shop.name}</TableCell>
+                    <TableCell>{shop.address}</TableCell>
+                    <TableCell>{shop.phone}</TableCell>
+                    <TableCell>{shop.refrigerator_number}</TableCell>
+                    <TableCell>{shop.manager_name ?? "—"}</TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
         </CardContent>

@@ -37,13 +37,24 @@ class ShopBase(BaseModel):
     phone: str
     refrigerator_number: str
 
+
 class ShopCreate(ShopBase):
     pass
 
-class Shop(ShopBase):
+
+class ShopUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    refrigerator_number: Optional[str] = None
+
+
+class ShopOut(ShopBase):
     id: int
+    manager_id: Optional[int] = None
+    manager_name: Optional[str] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 

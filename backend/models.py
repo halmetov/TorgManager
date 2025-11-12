@@ -29,13 +29,17 @@ class Product(Base):
 
 class Shop(Base):
     __tablename__ = "shops"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     address = Column(String)
     phone = Column(String)
     refrigerator_number = Column(String)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    manager_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    manager = relationship("User", foreign_keys=[manager_id])
 
 class Dispatch(Base):
     __tablename__ = "dispatches"

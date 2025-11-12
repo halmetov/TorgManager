@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -9,11 +9,31 @@ import secrets
 import models
 import schemas
 from database import engine, get_db
+from sqlalchemy import inspect, text
 from passlib.context import CryptContext
 import jwt
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
+
+
+def ensure_shop_columns():
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("shops")}
+    statements = []
+
+    if "manager_id" not in columns:
+        statements.append("ALTER TABLE shops ADD COLUMN IF NOT EXISTS manager_id INTEGER")
+    if "manager_name" not in columns:
+        statements.append("ALTER TABLE shops ADD COLUMN IF NOT EXISTS manager_name VARCHAR")
+
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+
+
+ensure_shop_columns()
 
 app = FastAPI(title="Confectionery Management System")
 
@@ -142,7 +162,7 @@ def get_products(
     elif main_only:
         query = query.filter(models.Product.is_return.is_(False))
 
-    if q:
+    if q not in (None, ""):
         query = query.filter(models.Product.name.ilike(f"%{q}%"))
 
     return query.order_by(models.Product.created_at.desc()).all()
@@ -220,21 +240,116 @@ def delete_product(
     db.commit()
     return {"message": "Товар удалён"}
 
-@app.get("/shops", response_model=List[schemas.Shop])
-def get_shops(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Shop).all()
+@app.get("/shops", response_model=List[schemas.ShopOut])
+def get_shops(
+    manager_id: Optional[int] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
 
-@app.post("/shops", response_model=schemas.Shop)
+    query = db.query(models.Shop)
+    if manager_id is not None:
+        query = query.filter(models.Shop.manager_id == manager_id)
+
+    return query.order_by(models.Shop.created_at.desc()).all()
+
+
+@app.get("/shops/me", response_model=List[schemas.ShopOut])
+def get_my_shops(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+
+    return (
+        db.query(models.Shop)
+        .filter(models.Shop.manager_id == current_user.id)
+        .order_by(models.Shop.created_at.desc())
+        .all()
+    )
+
+
+@app.post("/shops", response_model=schemas.ShopOut)
 def create_shop(
     shop: schemas.ShopCreate,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    db_shop = models.Shop(**shop.dict())
+    if current_user.role != "manager":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+
+    if not shop.name.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название обязательно")
+    if not shop.refrigerator_number.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Номер холодильника обязателен")
+
+    manager_name = current_user.full_name or current_user.username
+    db_shop = models.Shop(
+        **shop.dict(),
+        manager_id=current_user.id,
+        manager_name=manager_name,
+    )
     db.add(db_shop)
     db.commit()
     db.refresh(db_shop)
     return db_shop
+
+
+@app.put("/shops/{shop_id}", response_model=schemas.ShopOut)
+def update_shop(
+    shop_id: int,
+    shop: schemas.ShopUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+
+    db_shop = db.query(models.Shop).filter(models.Shop.id == shop_id).first()
+    if not db_shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Магазин не найден")
+    if db_shop.manager_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к магазину")
+
+    update_data = shop.dict(exclude_unset=True)
+
+    if "name" in update_data and not update_data["name"].strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название обязательно")
+    if "refrigerator_number" in update_data and not update_data["refrigerator_number"].strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Номер холодильника обязателен")
+
+    for key, value in update_data.items():
+        setattr(db_shop, key, value)
+
+    if not db_shop.manager_name:
+        db_shop.manager_name = current_user.full_name or current_user.username
+
+    db.commit()
+    db.refresh(db_shop)
+    return db_shop
+
+
+@app.delete("/shops/{shop_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_shop(
+    shop_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+
+    db_shop = db.query(models.Shop).filter(models.Shop.id == shop_id).first()
+    if not db_shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Магазин не найден")
+    if db_shop.manager_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к магазину")
+
+    db.delete(db_shop)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # Managers endpoints
 @app.get("/managers", response_model=List[schemas.Manager])
