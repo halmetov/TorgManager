@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
-from datetime import datetime
+from datetime import datetime, timezone
 
 class User(Base):
     __tablename__ = "users"
@@ -12,7 +12,7 @@ class User(Base):
     role = Column(String)  # 'admin' or 'manager'
     full_name = Column(String)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Product(Base):
     __tablename__ = "products"
@@ -23,7 +23,7 @@ class Product(Base):
     price = Column(Float)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     is_return = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     manager = relationship("User", foreign_keys=[manager_id])
 
@@ -37,7 +37,7 @@ class Shop(Base):
     refrigerator_number = Column(String)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     manager_name = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     manager = relationship("User", foreign_keys=[manager_id])
 
@@ -49,7 +49,7 @@ class Dispatch(Base):
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer)
     price = Column(Float)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     manager = relationship("User")
     product = relationship("Product")
@@ -64,7 +64,7 @@ class Order(Base):
     quantity = Column(Integer)
     price = Column(Float)
     refrigerator_number = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     manager = relationship("User")
     shop = relationship("Shop")
@@ -78,7 +78,7 @@ class Return(Base):
     shop_id = Column(Integer, ForeignKey("shops.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     manager = relationship("User")
     shop = relationship("Shop")
