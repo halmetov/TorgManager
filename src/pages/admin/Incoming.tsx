@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,21 +8,25 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Check, ChevronDown, Loader2 } from "lucide-react";
 
 interface ProductOption {
   id: number;
   name: string;
   quantity: number;
-  price: number;
 }
 
 interface IncomingRow {
+  id: string;
   product_id: number | null;
   product_name: string;
   quantity: string;
   search: string;
   options: ProductOption[];
   loading: boolean;
+  open: boolean;
 }
 
 interface ProductSearchResult extends ProductOption {
@@ -47,21 +51,44 @@ interface IncomingDetail {
   items: IncomingDetailItem[];
 }
 
-const createEmptyRow = (): IncomingRow => ({
-  product_id: null,
-  product_name: "",
-  quantity: "",
-  search: "",
-  options: [],
-  loading: false,
-});
-
 export default function AdminIncoming() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [rows, setRows] = useState<IncomingRow[]>([createEmptyRow()]);
+  const idCounterRef = useRef(0);
+  const createEmptyRow = (): IncomingRow => ({
+    id: `incoming-row-${idCounterRef.current++}`,
+    product_id: null,
+    product_name: "",
+    quantity: "",
+    search: "",
+    options: [],
+    loading: false,
+    open: false,
+  });
+
+  const [rows, setRows] = useState<IncomingRow[]>(() => [createEmptyRow()]);
   const [detailId, setDetailId] = useState<number | null>(null);
+
+  const searchTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const searchControllers = useRef<Record<string, AbortController>>({});
+
+  const cancelScheduledSearch = (rowId: string, abortOngoing = false) => {
+    if (searchTimeouts.current[rowId]) {
+      clearTimeout(searchTimeouts.current[rowId]);
+      delete searchTimeouts.current[rowId];
+    }
+    if (abortOngoing && searchControllers.current[rowId]) {
+      searchControllers.current[rowId].abort();
+      delete searchControllers.current[rowId];
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      Object.keys(searchTimeouts.current).forEach((rowId) => cancelScheduledSearch(rowId, true));
+    };
+  }, []);
 
   const fetchIncomingHistory = async (): Promise<IncomingHistoryItem[]> => {
     const client = api as unknown as { get: <T>(endpoint: string) => Promise<T> };
@@ -99,77 +126,102 @@ export default function AdminIncoming() {
     enabled: detailId !== null,
   });
 
-  const searchProducts = async (query: string): Promise<ProductOption[]> => {
-    if (!query.trim()) return [];
-    const products = (await api.getProducts({ q: query, mainOnly: true })) as ProductSearchResult[];
-    return products
-      .filter((product) => product.manager_id === null && !product.is_return)
-      .map((product) => ({
-        id: product.id,
-        name: product.name,
-        quantity: product.quantity,
-        price: product.price,
-      }));
+  const updateRow = (rowId: string, updater: (row: IncomingRow) => IncomingRow) => {
+    setRows((prev) => prev.map((row) => (row.id === rowId ? updater(row) : row)));
   };
 
-  const updateRow = (index: number, updater: (row: IncomingRow) => IncomingRow) => {
-    setRows((prev) => {
-      const next = [...prev];
-      next[index] = updater(prev[index]);
-      return next;
+  const handleSearchChange = (rowId: string, value: string) => {
+    cancelScheduledSearch(rowId, true);
+
+    const trimmed = value.trim();
+
+    updateRow(rowId, (row) => {
+      const shouldResetSelection = trimmed ? value !== row.product_name : false;
+      return {
+        ...row,
+        search: value,
+        loading: Boolean(trimmed),
+        options: trimmed ? row.options : [],
+        product_id: shouldResetSelection ? null : row.product_id,
+        product_name: shouldResetSelection ? "" : row.product_name,
+      };
     });
-  };
 
-  const handleSearchChange = async (index: number, value: string) => {
-    updateRow(index, (row) => ({
-      ...row,
-      search: value,
-      product_id: null,
-      product_name: "",
-      options: value ? row.options : [],
-      loading: Boolean(value),
-    }));
-
-    if (!value) {
-      updateRow(index, (row) => ({ ...row, options: [], loading: false }));
+    if (!trimmed) {
+      updateRow(rowId, (row) => ({ ...row, loading: false, options: [] }));
       return;
     }
 
-    try {
-      const options = await searchProducts(value);
-      updateRow(index, (row) => ({
-        ...row,
-        options,
-        loading: false,
-      }));
-    } catch (error) {
-      updateRow(index, (row) => ({ ...row, options: [], loading: false }));
-      const message = error instanceof Error ? error.message : "Не удалось выполнить поиск";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    }
+    const timeoutId = setTimeout(async () => {
+      delete searchTimeouts.current[rowId];
+      const controller = new AbortController();
+      searchControllers.current[rowId] = controller;
+
+      try {
+        const products = (await api.searchProducts(trimmed, { signal: controller.signal })) as ProductSearchResult[];
+        const options = products
+          .filter((product) => product.manager_id === null && !product.is_return)
+          .map((product) => ({
+            id: product.id,
+            name: product.name,
+            quantity: product.quantity,
+          }));
+
+        updateRow(rowId, (row) => ({
+          ...row,
+          options,
+          loading: false,
+        }));
+      } catch (error) {
+        if ((error instanceof DOMException || error instanceof Error) && error.name === "AbortError") {
+          return;
+        }
+        updateRow(rowId, (row) => ({ ...row, loading: false }));
+        const message = error instanceof Error ? error.message : "Не удалось выполнить поиск";
+        toast({ title: "Ошибка", description: message, variant: "destructive" });
+      } finally {
+        delete searchControllers.current[rowId];
+      }
+    }, 300);
+
+    searchTimeouts.current[rowId] = timeoutId;
   };
 
-  const handleSelectProduct = (index: number, option: ProductOption) => {
-    updateRow(index, (row) => ({
+  const handleSelectProduct = (rowId: string, option: ProductOption) => {
+    cancelScheduledSearch(rowId, true);
+    updateRow(rowId, (row) => ({
       ...row,
       product_id: option.id,
       product_name: option.name,
       search: option.name,
       options: [],
+      loading: false,
+      open: false,
     }));
   };
 
-  const handleQuantityChange = (index: number, value: string) => {
-    updateRow(index, (row) => ({ ...row, quantity: value }));
+  const handleQuantityChange = (rowId: string, value: string) => {
+    updateRow(rowId, (row) => ({ ...row, quantity: value }));
   };
 
   const addRow = () => setRows((prev) => [...prev, createEmptyRow()]);
 
-  const removeRow = (index: number) => {
-    setRows((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
+  const removeRow = (rowId: string) => {
+    setRows((prev) => {
+      if (prev.length <= 1) {
+        return prev;
+      }
+      cancelScheduledSearch(rowId, true);
+      return prev.filter((row) => row.id !== rowId);
+    });
   };
 
-  const resetForm = () => setRows([createEmptyRow()]);
+  const resetForm = () => {
+    Object.keys(searchTimeouts.current).forEach((rowId) => cancelScheduledSearch(rowId, true));
+    searchTimeouts.current = {};
+    searchControllers.current = {};
+    setRows([createEmptyRow()]);
+  };
 
   const isFormValid = useMemo(
     () =>
@@ -184,13 +236,8 @@ export default function AdminIncoming() {
   );
 
   const incomingMutation = useMutation({
-    mutationFn: () =>
-      api.post("/incoming", {
-        items: rows.map((row) => ({
-          product_id: row.product_id as number,
-          quantity: Number(row.quantity),
-        })),
-      }),
+    mutationFn: (payload: { items: { product_id: number; quantity: number }[] }) =>
+      api.createIncoming(payload),
     onSuccess: () => {
       toast({ title: "Поступление сохранено" });
       resetForm();
@@ -205,8 +252,16 @@ export default function AdminIncoming() {
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!isFormValid) return;
-    incomingMutation.mutate();
+    if (!isFormValid || incomingMutation.isPending) return;
+
+    const payload = {
+      items: rows.map((row) => ({
+        product_id: row.product_id as number,
+        quantity: Number(row.quantity),
+      })),
+    };
+
+    incomingMutation.mutate(payload);
   };
 
   const formatDate = (iso?: string | null) =>
@@ -225,54 +280,117 @@ export default function AdminIncoming() {
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-4">
-              {rows.map((row, index) => (
-                <div key={index} className="rounded-lg border p-4 space-y-4">
-                  <div className="flex flex-col gap-2">
-                    <Label>Товар</Label>
-                    <Input
-                      value={row.search}
-                      onChange={(event) => handleSearchChange(index, event.target.value)}
-                      placeholder="Начните вводить название товара"
-                      autoComplete="off"
-                    />
-                    {row.loading && <p className="text-xs text-muted-foreground">Поиск...</p>}
-                    {!row.loading && row.options.length > 0 && (
-                      <div className="rounded-md border bg-background">
-                        {row.options.map((option) => (
-                          <button
-                            key={option.id}
+              {rows.map((row) => (
+                <div key={row.id} className="space-y-4 rounded-lg border p-4">
+                  <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] md:items-end">
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor={`incoming-product-${row.id}`}>Товар</Label>
+                      <Popover
+                        open={row.open}
+                        onOpenChange={(open) => {
+                          if (!open) {
+                            cancelScheduledSearch(row.id, true);
+                            updateRow(row.id, (current) => ({
+                              ...current,
+                              open: false,
+                              search: current.product_name,
+                              options: [],
+                              loading: false,
+                            }));
+                          } else {
+                            updateRow(row.id, (current) => ({
+                              ...current,
+                              open: true,
+                              search: current.product_name || "",
+                            }));
+                          }
+                        }}
+                      >
+                        <PopoverTrigger asChild>
+                          <Button
+                            id={`incoming-product-${row.id}`}
                             type="button"
-                            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-muted"
-                            onClick={() => handleSelectProduct(index, option)}
+                            variant="outline"
+                            role="combobox"
+                            aria-expanded={row.open}
+                            className="w-full justify-between"
                           >
-                            <span>{option.name}</span>
-                            <span className="text-xs text-muted-foreground">
-                              Остаток: {option.quantity}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {row.product_name && (
-                      <p className="text-xs text-muted-foreground">Выбрано: {row.product_name}</p>
-                    )}
-                  </div>
-
-                  <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                      <Label>Количество</Label>
+                            {row.product_name ? (
+                              <span className="truncate">{row.product_name}</span>
+                            ) : (
+                              <span className="text-muted-foreground">Выберите товар</span>
+                            )}
+                            <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          className="p-0"
+                          align="start"
+                          style={{ width: "var(--radix-popover-trigger-width)", minWidth: "280px" }}
+                        >
+                          <Command>
+                            <CommandInput
+                              value={row.search}
+                              onValueChange={(value) => handleSearchChange(row.id, value)}
+                              placeholder="Начните вводить название товара"
+                            />
+                            <CommandList>
+                              <CommandEmpty>
+                                {row.loading ? (
+                                  <span className="flex items-center justify-center gap-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Поиск...
+                                  </span>
+                                ) : row.search.trim() ? (
+                                  "Ничего не найдено"
+                                ) : (
+                                  "Введите название для поиска"
+                                )}
+                              </CommandEmpty>
+                              {row.options.length > 0 && (
+                                <CommandGroup>
+                                  {row.options.map((option) => (
+                                    <CommandItem
+                                      key={option.id}
+                                      value={`${option.id}`}
+                                      onSelect={() => handleSelectProduct(row.id, option)}
+                                    >
+                                      <div className="flex w-full items-center justify-between gap-3">
+                                        <span className="truncate">{option.name}</span>
+                                        <span className="text-xs text-muted-foreground">Остаток: {option.quantity}</span>
+                                      </div>
+                                      {row.product_id === option.id && (
+                                        <Check className="ml-2 h-4 w-4 text-primary" />
+                                      )}
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              )}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor={`incoming-quantity-${row.id}`}>Количество</Label>
                       <Input
+                        id={`incoming-quantity-${row.id}`}
                         type="number"
                         min="1"
+                        step="1"
                         value={row.quantity}
-                        onChange={(event) => handleQuantityChange(index, event.target.value)}
+                        onChange={(event) => handleQuantityChange(row.id, event.target.value)}
                         placeholder="0"
                         required
                       />
                     </div>
-
                     {rows.length > 1 && (
-                      <Button type="button" variant="ghost" onClick={() => removeRow(index)}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() => removeRow(row.id)}
+                        className="justify-self-start md:justify-self-end"
+                      >
                         Удалить
                       </Button>
                     )}
@@ -283,10 +401,17 @@ export default function AdminIncoming() {
 
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <Button type="button" variant="outline" onClick={addRow}>
-                Добавить строку
+                Добавить позицию
               </Button>
               <Button type="submit" className="md:w-56" disabled={!isFormValid || incomingMutation.isPending}>
-                Сохранить
+                {incomingMutation.isPending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Сохранение...
+                  </>
+                ) : (
+                  "Сохранить"
+                )}
               </Button>
             </div>
           </form>
@@ -341,7 +466,7 @@ export default function AdminIncoming() {
       </Card>
 
       <Dialog open={detailId !== null} onOpenChange={(open) => !open && setDetailId(null)}>
-        <DialogContent className="sm:max-w-2xl incoming-printable">
+        <DialogContent className="incoming-printable sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Детали поступления</DialogTitle>
           </DialogHeader>
@@ -349,9 +474,7 @@ export default function AdminIncoming() {
             <p className="text-sm text-muted-foreground">Загрузка...</p>
           ) : (
             <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Создано: {formatDate(incomingDetail.created_at)}
-              </p>
+              <p className="text-sm text-muted-foreground">Создано: {formatDate(incomingDetail.created_at)}</p>
               <Table>
                 <TableHeader>
                   <TableRow>

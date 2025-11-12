@@ -10,6 +10,7 @@ import models
 import schemas
 from database import engine, get_db
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from passlib.context import CryptContext
 import jwt
 
@@ -790,60 +791,63 @@ def create_incoming(
     db: Session = Depends(get_db)
 ):
     if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Недостаточно прав")
+        raise HTTPException(status_code=403, detail="Only admin can create incoming")
 
     if not incoming.items:
         raise HTTPException(status_code=400, detail="Необходимо указать товары")
 
     now = datetime.utcnow()
+    incoming_id: Optional[int] = None
 
     try:
-        result = db.execute(
-            text("INSERT INTO incoming (created_at) VALUES (:created_at) RETURNING id"),
-            {"created_at": now},
-        )
-        incoming_id = result.scalar_one()
-
-        for item in incoming.items:
-            if item.quantity <= 0:
-                raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
-
-            product = (
-                db.query(models.Product)
-                .filter(
-                    models.Product.id == item.product_id,
-                    models.Product.manager_id.is_(None),
-                )
-                .with_for_update()
-                .first()
-            )
-
-            if not product:
-                raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found")
-
-            product.quantity += item.quantity
-
-            db.execute(
+        with db.begin():
+            result = db.execute(
                 text(
-                    """
-                    INSERT INTO incoming_items (incoming_id, product_id, quantity)
-                    VALUES (:incoming_id, :product_id, :quantity)
-                    """
+                    "INSERT INTO incoming (created_at, created_by_admin_id) "
+                    "VALUES (:created_at, :created_by_admin_id) RETURNING id"
                 ),
-                {
-                    "incoming_id": incoming_id,
-                    "product_id": item.product_id,
-                    "quantity": item.quantity,
-                },
+                {"created_at": now, "created_by_admin_id": current_user.id},
             )
+            incoming_id = result.scalar_one()
 
-        db.commit()
+            for item in incoming.items:
+                if item.quantity <= 0:
+                    raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+
+                product = (
+                    db.query(models.Product)
+                    .filter(
+                        models.Product.id == item.product_id,
+                        models.Product.manager_id.is_(None),
+                    )
+                    .with_for_update()
+                    .first()
+                )
+
+                if not product:
+                    raise HTTPException(status_code=400, detail=f"Товар {item.product_id} не найден")
+
+                product.quantity += item.quantity
+
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO incoming_items (incoming_id, product_id, quantity)
+                        VALUES (:incoming_id, :product_id, :quantity)
+                        """
+                    ),
+                    {
+                        "incoming_id": incoming_id,
+                        "product_id": item.product_id,
+                        "quantity": item.quantity,
+                    },
+                )
     except HTTPException:
-        db.rollback()
         raise
-    except Exception:
-        db.rollback()
-        raise
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Database constraint error")
+    except SQLAlchemyError:
+        raise HTTPException(status_code=400, detail="Database error")
 
     return {"id": incoming_id, "created_at": now}
 
