@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 import os
 import secrets
@@ -115,7 +115,7 @@ def get_password_hash(password):
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -584,7 +584,7 @@ def create_dispatch(
             }
         )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     try:
         created = db.execute(
@@ -806,7 +806,7 @@ def accept_dispatch(
                 )
                 db.add(manager_product)
 
-        accepted_at = datetime.utcnow()
+        accepted_at = datetime.now(timezone.utc)
         db.execute(
             text(
                 """
@@ -944,7 +944,7 @@ def create_incoming(
     if not incoming.items:
         raise HTTPException(status_code=400, detail="Необходимо указать товары")
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     incoming_id: Optional[int] = None
 
     try:
