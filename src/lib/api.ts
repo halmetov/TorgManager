@@ -166,12 +166,31 @@ class ApiClient {
   }
 
   // Shops
-  async getShops() {
-    return this.get('/shops');
+  async getShops(params?: { managerId?: number }) {
+    const searchParams = new URLSearchParams();
+    if (params?.managerId !== undefined) {
+      searchParams.set('manager_id', String(params.managerId));
+    }
+
+    const query = searchParams.toString();
+    const endpoint = `/shops${query ? `?${query}` : ''}`;
+    return this.get(endpoint);
   }
 
   async createShop(data: any) {
     return this.post('/shops', data);
+  }
+
+  async updateShop(id: number, data: any) {
+    return this.put(`/shops/${id}`, data);
+  }
+
+  async deleteShop(id: number) {
+    return this.delete(`/shops/${id}`);
+  }
+
+  async getMyShops() {
+    return this.get('/shops/me');
   }
 
   // Managers
