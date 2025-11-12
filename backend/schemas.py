@@ -10,6 +10,18 @@ class ProductBase(BaseModel):
 class ProductCreate(ProductBase):
     is_return: bool = False
 
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    quantity: Optional[int] = None
+    price: Optional[float] = None
+
+
+class ProductOut(ProductBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
 class Product(ProductBase):
     id: int
     manager_id: Optional[int]

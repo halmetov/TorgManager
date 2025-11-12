@@ -16,6 +16,19 @@ class ApiClient {
     this.token = localStorage.getItem('token');
   }
 
+  private async handleError(response: Response): Promise<never> {
+    let message = `HTTP error! status: ${response.status}`;
+    try {
+      const errorData = await response.json();
+      message = errorData.detail || message;
+    } catch {
+      // ignore json parse errors
+    }
+    const error = new Error(message) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+
   private getHeaders(): HeadersInit {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
@@ -66,7 +79,7 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      await this.handleError(response);
     }
 
     return response.json();
@@ -80,8 +93,7 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || `HTTP error! status: ${response.status}`);
+      await this.handleError(response);
     }
 
     return response.json();
@@ -95,7 +107,7 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      await this.handleError(response);
     }
 
     return response.json();
@@ -108,14 +120,37 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      await this.handleError(response);
     }
   }
 
   // Products
-  async getProducts(isReturn?: boolean) {
-    const params = isReturn !== undefined ? `?is_return=${isReturn}` : '';
-    return this.get(`/products${params}`);
+  async getProducts(q?: string): Promise<any>;
+  async getProducts(params: { q?: string; mainOnly?: boolean; isReturn?: boolean }): Promise<any>;
+  async getProducts(param?: string | { q?: string; mainOnly?: boolean; isReturn?: boolean } | boolean): Promise<any> {
+    const searchParams = new URLSearchParams();
+
+    if (typeof param === 'boolean') {
+      searchParams.set('is_return', String(param));
+    } else if (typeof param === 'string') {
+      if (param) {
+        searchParams.set('q', param);
+      }
+    } else if (param) {
+      if (param.q) {
+        searchParams.set('q', param.q);
+      }
+      if (param.isReturn !== undefined) {
+        searchParams.set('is_return', String(param.isReturn));
+      }
+      if (param.mainOnly) {
+        searchParams.set('main_only', 'true');
+      }
+    }
+
+    const query = searchParams.toString();
+    const endpoint = `/products${query ? `?${query}` : ''}`;
+    return this.get(endpoint);
   }
 
   async createProduct(data: any) {

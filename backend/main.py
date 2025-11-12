@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -124,16 +124,28 @@ def get_me(current_user: models.User = Depends(get_current_user)):
 # Products endpoints
 @app.get("/products", response_model=List[schemas.Product])
 def get_products(
-    is_return: Optional[bool] = None,
+    q: Optional[str] = Query(None),
+    is_return: Optional[bool] = Query(None),
+    main_only: bool = Query(False),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     query = db.query(models.Product)
-    if current_user.role == "manager":
+
+    if main_only:
+        query = query.filter(models.Product.manager_id.is_(None))
+    elif current_user.role == "manager":
         query = query.filter(models.Product.manager_id == current_user.id)
+
     if is_return is not None:
         query = query.filter(models.Product.is_return == is_return)
-    return query.all()
+    elif main_only:
+        query = query.filter(models.Product.is_return.is_(False))
+
+    if q:
+        query = query.filter(models.Product.name.ilike(f"%{q}%"))
+
+    return query.order_by(models.Product.created_at.desc()).all()
 
 @app.post("/products", response_model=schemas.Product)
 def create_product(
@@ -142,7 +154,7 @@ def create_product(
     db: Session = Depends(get_db)
 ):
     if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Только администратор может создавать товары")
     
     db_product = models.Product(**product.dict())
     db.add(db_product)
@@ -150,25 +162,33 @@ def create_product(
     db.refresh(db_product)
     return db_product
 
-@app.put("/products/{product_id}")
+@app.put("/products/{product_id}", response_model=schemas.Product)
 def update_product(
     product_id: int,
-    product: schemas.ProductCreate,
+    product: schemas.ProductUpdate,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Только администратор может обновлять товары")
+
+    db_product = db.query(models.Product).filter(
+        models.Product.id == product_id,
+        models.Product.manager_id.is_(None)
+    ).first()
     if not db_product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    for key, value in product.dict().items():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    update_data = product.dict(exclude_unset=True)
+    if not update_data:
+        return db_product
+
+    for key, value in update_data.items():
         setattr(db_product, key, value)
-    
+
     db.commit()
-    return {"message": "Product updated"}
+    db.refresh(db_product)
+    return db_product
 
 @app.delete("/products/{product_id}")
 def delete_product(
@@ -176,36 +196,30 @@ def delete_product(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    db_product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Только администратор может удалять товары")
+
+    db_product = db.query(models.Product).filter(
+        models.Product.id == product_id,
+        models.Product.manager_id.is_(None)
+    ).first()
     if not db_product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    # Check authorization
-    if current_user.role == "admin" and db_product.manager_id is None:
-        # Admin can delete admin products
-        pass
-    elif current_user.role == "manager" and db_product.manager_id == current_user.id:
-        # Manager can delete their own products
-        pass
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Check if product is referenced in dispatches, orders, or returns
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
     has_dispatches = db.query(models.Dispatch).filter(models.Dispatch.product_id == product_id).first()
     has_orders = db.query(models.Order).filter(models.Order.product_id == product_id).first()
     has_returns = db.query(models.Return).filter(models.Return.product_id == product_id).first()
-    
+
     if has_dispatches or has_orders or has_returns:
         raise HTTPException(
-            status_code=400, 
-            detail="Cannot delete product with existing transactions. Please archive it instead."
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить товар, он участвует в операциях"
         )
-    
+
     db.delete(db_product)
     db.commit()
-    return {"message": "Product deleted"}
+    return {"message": "Товар удалён"}
 
-# Shops endpoints
 @app.get("/shops", response_model=List[schemas.Shop])
 def get_shops(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.Shop).all()
