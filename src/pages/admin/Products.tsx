@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,33 +7,84 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
+
+interface Product {
+  id: number;
+  name: string;
+  quantity: number;
+  price: number;
+}
+
+function useDebouncedValue<T>(value: T, delay = 300) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
 
 export default function AdminProducts() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState<"all" | "return" | "normal">("all");
-  const [formData, setFormData] = useState({
-    name: "",
-    quantity: "",
-    price: "",
+
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
+
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({ name: "", quantity: "", price: "" });
+  const [editForm, setEditForm] = useState({ name: "", quantity: "", price: "" });
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+
+  const {
+    data: products = [],
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["products", { q: debouncedSearch }],
+    queryFn: () => api.getProducts({ q: debouncedSearch, mainOnly: true }),
   });
 
-  const { data: products = [] } = useQuery({
-    queryKey: ["products"],
-    queryFn: () => api.getProducts(),
-  });
+  useEffect(() => {
+    if (error) {
+      const message = error instanceof Error ? error.message : "Не удалось загрузить товары";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [error, toast]);
+
+  const resetCreateForm = () => setCreateForm({ name: "", quantity: "", price: "" });
 
   const createMutation = useMutation({
-    mutationFn: (data: any) => api.createProduct(data),
+    mutationFn: (data: { name: string; quantity: number; price: number }) => api.createProduct(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
       toast({ title: "Товар добавлен" });
-      setOpen(false);
-      setFormData({ name: "", quantity: "", price: "" });
+      setIsCreateOpen(false);
+      resetCreateForm();
+    },
+    onError: (mutationError: any) => {
+      const message = mutationError?.message ?? "Не удалось добавить товар";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: { name: string; quantity: number; price: number } }) =>
+      api.updateProduct(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      toast({ title: "Товар обновлён" });
+      setIsEditOpen(false);
+      setSelectedProduct(null);
+    },
+    onError: (mutationError: any) => {
+      const message = mutationError?.message ?? "Не удалось обновить товар";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
 
@@ -41,99 +92,140 @@ export default function AdminProducts() {
     mutationFn: (id: number) => api.deleteProduct(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
-      toast({ title: "Товар удален" });
+      toast({ title: "Товар удалён" });
     },
-    onError: (error: any) => {
-      toast({
-        title: "Ошибка удаления",
-        description: error?.message || "Не удалось удалить товар",
-        variant: "destructive",
-      });
+    onError: (mutationError: any) => {
+      const status = mutationError?.status;
+      const message =
+        status === 409
+          ? "Нельзя удалить товар, он участвует в операциях"
+          : mutationError?.message ?? "Не удалось удалить товар";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateSubmit = (event: FormEvent) => {
+    event.preventDefault();
     createMutation.mutate({
-      name: formData.name,
-      quantity: parseInt(formData.quantity),
-      price: parseFloat(formData.price),
-      is_return: false,
+      name: createForm.name.trim(),
+      quantity: Number(createForm.quantity),
+      price: Number(createForm.price),
     });
   };
 
-  const filteredProducts = (products as any[]).filter((p: any) => {
-    if (filter === "return") return p.is_return;
-    if (filter === "normal") return !p.is_return;
-    return true;
-  });
+  const handleEditSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedProduct) return;
+
+    updateMutation.mutate({
+      id: selectedProduct.id,
+      data: {
+        name: editForm.name.trim(),
+        quantity: Number(editForm.quantity),
+        price: Number(editForm.price),
+      },
+    });
+  };
+
+  const openEditDialog = (product: Product) => {
+    setSelectedProduct(product);
+    setEditForm({
+      name: product.name,
+      quantity: product.quantity.toString(),
+      price: product.price.toString(),
+    });
+    setIsEditOpen(true);
+  };
+
+  const handleDelete = (id: number) => {
+    if (window.confirm("Удалить товар?")) {
+      deleteMutation.mutate(id);
+    }
+  };
+
+  const isCreateValid = useMemo(() => {
+    const nameValid = createForm.name.trim().length > 0;
+    const quantityValid = createForm.quantity !== "" && !Number.isNaN(Number(createForm.quantity));
+    const priceValid = createForm.price !== "" && !Number.isNaN(Number(createForm.price));
+    return nameValid && quantityValid && priceValid;
+  }, [createForm]);
+
+  const isEditValid = useMemo(() => {
+    const nameValid = editForm.name.trim().length > 0;
+    const quantityValid = editForm.quantity !== "" && !Number.isNaN(Number(editForm.quantity));
+    const priceValid = editForm.price !== "" && !Number.isNaN(Number(editForm.price));
+    return nameValid && quantityValid && priceValid;
+  }, [editForm]);
+
+  const productsList = Array.isArray(products) ? (products as Product[]) : [];
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <h1 className="text-3xl font-bold">Товары</h1>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4" />
-              Добавить товар
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Новый товар</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <Label>Название</Label>
-                <Input
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <Label>Количество</Label>
-                <Input
-                  type="number"
-                  value={formData.quantity}
-                  onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <Label>Цена</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={formData.price}
-                  onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                  required
-                />
-              </div>
-              <Button type="submit" className="w-full">
-                Добавить
+        <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center">
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Поиск по названию"
+            className="md:w-72"
+          />
+          <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Добавить товар
               </Button>
-            </form>
-          </DialogContent>
-        </Dialog>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Новый товар</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleCreateSubmit} className="space-y-4">
+                <div>
+                  <Label htmlFor="create-name">Название</Label>
+                  <Input
+                    id="create-name"
+                    value={createForm.name}
+                    onChange={(event) => setCreateForm({ ...createForm, name: event.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="create-quantity">Количество</Label>
+                  <Input
+                    id="create-quantity"
+                    type="number"
+                    min="0"
+                    value={createForm.quantity}
+                    onChange={(event) => setCreateForm({ ...createForm, quantity: event.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="create-price">Цена</Label>
+                  <Input
+                    id="create-price"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={createForm.price}
+                    onChange={(event) => setCreateForm({ ...createForm, price: event.target.value })}
+                    required
+                  />
+                </div>
+                <Button type="submit" className="w-full" disabled={!isCreateValid || createMutation.isPending}>
+                  Сохранить
+                </Button>
+              </form>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       <Card>
         <CardHeader>
-          <div className="flex justify-between items-center">
-            <CardTitle>Список товаров</CardTitle>
-            <Select value={filter} onValueChange={(v: any) => setFilter(v)}>
-              <SelectTrigger className="w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-background z-50">
-                <SelectItem value="all">Все товары</SelectItem>
-                <SelectItem value="normal">Обычные</SelectItem>
-                <SelectItem value="return">Возвраты</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <CardTitle>Список товаров главного склада</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
@@ -142,40 +234,100 @@ export default function AdminProducts() {
                 <TableHead>Название</TableHead>
                 <TableHead>Количество</TableHead>
                 <TableHead>Цена</TableHead>
-                <TableHead>Статус</TableHead>
-                <TableHead>Действия</TableHead>
+                <TableHead className="w-32 text-right">Действия</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredProducts.map((product: any) => (
-                <TableRow key={product.id}>
-                  <TableCell>{product.name}</TableCell>
-                  <TableCell>{product.quantity}</TableCell>
-                  <TableCell>{product.price} ₸</TableCell>
-                  <TableCell>
-                    {product.is_return ? (
-                      <span className="text-orange-600">Возврат</span>
-                    ) : (
-                      <span className="text-green-600">Обычный</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title={product.manager_id !== null ? "Нельзя удалить товар менеджера" : undefined}
-                      disabled={product.manager_id !== null}
-                      onClick={() => deleteMutation.mutate(product.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    Загрузка...
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : productsList.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    Нет товаров
+                  </TableCell>
+                </TableRow>
+              ) : (
+                productsList.map((product) => (
+                  <TableRow key={product.id}>
+                    <TableCell>{product.name}</TableCell>
+                    <TableCell>{product.quantity}</TableCell>
+                    <TableCell>{product.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₸</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button variant="outline" size="icon" onClick={() => openEditDialog(product)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="icon"
+                          onClick={() => handleDelete(product.id)}
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={isEditOpen} onOpenChange={(open) => {
+        setIsEditOpen(open);
+        if (!open) {
+          setSelectedProduct(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Редактировать товар</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleEditSubmit} className="space-y-4">
+            <div>
+              <Label htmlFor="edit-name">Название</Label>
+              <Input
+                id="edit-name"
+                value={editForm.name}
+                onChange={(event) => setEditForm({ ...editForm, name: event.target.value })}
+                required
+              />
+            </div>
+            <div>
+              <Label htmlFor="edit-quantity">Количество</Label>
+              <Input
+                id="edit-quantity"
+                type="number"
+                min="0"
+                value={editForm.quantity}
+                onChange={(event) => setEditForm({ ...editForm, quantity: event.target.value })}
+                required
+              />
+            </div>
+            <div>
+              <Label htmlFor="edit-price">Цена</Label>
+              <Input
+                id="edit-price"
+                type="number"
+                min="0"
+                step="0.01"
+                value={editForm.price}
+                onChange={(event) => setEditForm({ ...editForm, price: event.target.value })}
+                required
+              />
+            </div>
+            <Button type="submit" className="w-full" disabled={!isEditValid || updateMutation.isPending}>
+              Сохранить изменения
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
