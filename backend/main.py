@@ -35,6 +35,51 @@ def ensure_shop_columns():
 
 ensure_shop_columns()
 
+
+def ensure_dispatch_columns():
+    inspector = inspect(engine)
+    try:
+        columns = {column["name"] for column in inspector.get_columns("dispatches")}
+    except Exception:
+        return
+
+    statements = []
+    if "status" not in columns:
+        statements.append("ALTER TABLE dispatches ADD COLUMN IF NOT EXISTS status VARCHAR")
+    if "accepted_at" not in columns:
+        statements.append("ALTER TABLE dispatches ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP")
+
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+            connection.execute(text("UPDATE dispatches SET status = 'sent' WHERE status IS NULL"))
+
+
+def ensure_incoming_tables():
+    create_incoming = """
+        CREATE TABLE IF NOT EXISTS incoming (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """
+    create_incoming_items = """
+        CREATE TABLE IF NOT EXISTS incoming_items (
+            id SERIAL PRIMARY KEY,
+            incoming_id INTEGER REFERENCES incoming(id) ON DELETE CASCADE,
+            product_id INTEGER REFERENCES products(id),
+            quantity INTEGER NOT NULL
+        )
+    """
+
+    with engine.begin() as connection:
+        connection.execute(text(create_incoming))
+        connection.execute(text(create_incoming_items))
+
+
+ensure_dispatch_columns()
+ensure_incoming_tables()
+
 app = FastAPI(title="Confectionery Management System")
 
 ALLOWED_ORIGINS = [
@@ -152,15 +197,18 @@ def get_products(
 ):
     query = db.query(models.Product)
 
-    if main_only:
+    if current_user.role == "admin":
         query = query.filter(models.Product.manager_id.is_(None))
-    elif current_user.role == "manager":
+        if is_return is not None:
+            query = query.filter(models.Product.is_return == is_return)
+        else:
+            query = query.filter(models.Product.is_return.is_(False))
+    else:
         query = query.filter(models.Product.manager_id == current_user.id)
-
-    if is_return is not None:
-        query = query.filter(models.Product.is_return == is_return)
-    elif main_only:
-        query = query.filter(models.Product.is_return.is_(False))
+        if is_return is not None:
+            query = query.filter(models.Product.is_return == is_return)
+        else:
+            query = query.filter(models.Product.is_return.is_(False))
 
     if q not in (None, ""):
         query = query.filter(models.Product.name.ilike(f"%{q}%"))
@@ -422,57 +470,218 @@ def create_dispatch(
     if not manager:
         raise HTTPException(status_code=404, detail="Manager not found")
     
-    # Create dispatch records and update inventory
-    for item in dispatch.items:
-        # Check product availability (only admin products where manager_id is NULL)
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id,
+    if not dispatch.items:
+        raise HTTPException(status_code=400, detail="Нет товаров для отправки")
+
+    now = datetime.utcnow()
+
+    try:
+        for item in dispatch.items:
+            if item.quantity <= 0:
+                raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+
+            product = db.query(models.Product).filter(
+                models.Product.id == item.product_id,
+                models.Product.manager_id.is_(None),
+                models.Product.is_return == False
+            ).first()
+
+            if not product:
+                raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found in admin inventory")
+
+            insert_stmt = text(
+                """
+                INSERT INTO dispatches (manager_id, product_id, quantity, price, created_at, status)
+                VALUES (:manager_id, :product_id, :quantity, :price, :created_at, :status)
+                """
+            )
+            db.execute(
+                insert_stmt,
+                {
+                    "manager_id": dispatch.manager_id,
+                    "product_id": item.product_id,
+                    "quantity": item.quantity,
+                    "price": product.price,
+                    "created_at": now,
+                    "status": "pending",
+                },
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {"message": "Dispatch created successfully"}
+
+# Dispatch history and acceptance
+@app.get("/dispatch", response_model=List[schemas.DispatchHistoryItem])
+def list_dispatches(
+    manager_id: Optional[int] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    params = {}
+    base_query = """
+        SELECT d.id,
+               d.manager_id,
+               COALESCE(u.full_name, u.username) AS manager_name,
+               d.product_id,
+               COALESCE(p.name, '') AS product_name,
+               d.quantity,
+               COALESCE(d.status, 'pending') AS status,
+               d.created_at,
+               d.accepted_at
+        FROM dispatches d
+        LEFT JOIN users u ON u.id = d.manager_id
+        LEFT JOIN products p ON p.id = d.product_id
+        WHERE 1=1
+    """
+
+    if current_user.role == "manager":
+        base_query += " AND d.manager_id = :current_manager_id"
+        params["current_manager_id"] = current_user.id
+    elif manager_id is not None:
+        base_query += " AND d.manager_id = :manager_id"
+        params["manager_id"] = manager_id
+
+    if status_filter:
+        base_query += " AND COALESCE(d.status, 'pending') = :status"
+        params["status"] = status_filter
+
+    base_query += " ORDER BY d.created_at DESC, d.id DESC"
+
+    result = db.execute(text(base_query), params)
+    return [dict(row) for row in result.mappings()]
+
+
+@app.post("/dispatch/{dispatch_id}/accept", response_model=schemas.DispatchHistoryItem)
+def accept_dispatch(
+    dispatch_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    dispatch_row = db.execute(
+        text(
+            """
+            SELECT d.id, d.manager_id, d.product_id, d.quantity, d.price,
+                   COALESCE(d.status, 'pending') AS status,
+                   d.created_at, d.accepted_at
+            FROM dispatches d
+            WHERE d.id = :dispatch_id
+            """
+        ),
+        {"dispatch_id": dispatch_id},
+    ).mappings().first()
+
+    if not dispatch_row:
+        raise HTTPException(status_code=404, detail="Отправка не найдена")
+
+    if dispatch_row["manager_id"] != current_user.id:
+        raise HTTPException(status_code=403, detail="Нет доступа к отправке")
+
+    if dispatch_row["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Отправка уже обработана")
+
+    product = (
+        db.query(models.Product)
+        .filter(
+            models.Product.id == dispatch_row["product_id"],
             models.Product.manager_id.is_(None),
-            models.Product.is_return == False
-        ).first()
-        
-        if not product:
-            raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found in admin inventory")
-        
-        if product.quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"Insufficient quantity for product {product.name}")
-        
-        # Deduct from admin inventory
-        product.quantity -= item.quantity
-        
-        # Find or create manager product
-        manager_product = db.query(models.Product).filter(
-            models.Product.name == product.name,
-            models.Product.price == product.price,
-            models.Product.manager_id == dispatch.manager_id,
-            models.Product.is_return == False
-        ).first()
-        
+            models.Product.is_return == False,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Товар не найден на складе")
+
+    if product.quantity < dispatch_row["quantity"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "product_id": dispatch_row["product_id"],
+                "required": dispatch_row["quantity"],
+                "available": product.quantity,
+            },
+        )
+
+    try:
+        product.quantity -= dispatch_row["quantity"]
+
+        manager_product = (
+            db.query(models.Product)
+            .filter(
+                models.Product.manager_id == current_user.id,
+                models.Product.name == product.name,
+                models.Product.is_return == False,
+            )
+            .first()
+        )
+
         if manager_product:
-            # Update existing manager product
-            manager_product.quantity += item.quantity
+            manager_product.quantity += dispatch_row["quantity"]
+            manager_product.price = product.price
         else:
-            # Create new product for manager
             manager_product = models.Product(
                 name=product.name,
-                quantity=item.quantity,
+                quantity=dispatch_row["quantity"],
                 price=product.price,
-                manager_id=dispatch.manager_id,
-                is_return=False
+                manager_id=current_user.id,
+                is_return=False,
             )
             db.add(manager_product)
-        
-        # Create dispatch record
-        db_dispatch = models.Dispatch(
-            manager_id=dispatch.manager_id,
-            product_id=item.product_id,
-            quantity=item.quantity,
-            price=product.price
+
+        accepted_at = datetime.utcnow()
+        db.execute(
+            text(
+                """
+                UPDATE dispatches
+                SET status = 'sent', accepted_at = :accepted_at, price = :price
+                WHERE id = :dispatch_id
+                """
+            ),
+            {
+                "accepted_at": accepted_at,
+                "dispatch_id": dispatch_id,
+                "price": product.price,
+            },
         )
-        db.add(db_dispatch)
-    
-    db.commit()
-    return {"message": "Dispatch created successfully"}
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    updated = db.execute(
+        text(
+            """
+            SELECT d.id,
+                   d.manager_id,
+                   COALESCE(u.full_name, u.username) AS manager_name,
+                   d.product_id,
+                   COALESCE(p.name, '') AS product_name,
+                   d.quantity,
+                   COALESCE(d.status, 'pending') AS status,
+                   d.created_at,
+                   d.accepted_at
+            FROM dispatches d
+            LEFT JOIN users u ON u.id = d.manager_id
+            LEFT JOIN products p ON p.id = d.product_id
+            WHERE d.id = :dispatch_id
+            """
+        ),
+        {"dispatch_id": dispatch_id},
+    ).mappings().first()
+
+    return dict(updated)
 
 # Orders endpoints
 @app.post("/orders")
@@ -573,6 +782,124 @@ def create_return(
     db.commit()
     return {"message": "Return created successfully"}
 
+# Incoming endpoints
+@app.post("/incoming", response_model=schemas.IncomingCreated)
+def create_incoming(
+    incoming: schemas.IncomingCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    if not incoming.items:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    now = datetime.utcnow()
+
+    try:
+        result = db.execute(
+            text("INSERT INTO incoming (created_at) VALUES (:created_at) RETURNING id"),
+            {"created_at": now},
+        )
+        incoming_id = result.scalar_one()
+
+        for item in incoming.items:
+            if item.quantity <= 0:
+                raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+
+            product = (
+                db.query(models.Product)
+                .filter(
+                    models.Product.id == item.product_id,
+                    models.Product.manager_id.is_(None),
+                )
+                .with_for_update()
+                .first()
+            )
+
+            if not product:
+                raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found")
+
+            product.quantity += item.quantity
+
+            db.execute(
+                text(
+                    """
+                    INSERT INTO incoming_items (incoming_id, product_id, quantity)
+                    VALUES (:incoming_id, :product_id, :quantity)
+                    """
+                ),
+                {
+                    "incoming_id": incoming_id,
+                    "product_id": item.product_id,
+                    "quantity": item.quantity,
+                },
+            )
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    return {"id": incoming_id, "created_at": now}
+
+
+@app.get("/incoming", response_model=List[schemas.IncomingListItem])
+def list_incoming(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    result = db.execute(
+        text("SELECT id, created_at FROM incoming ORDER BY created_at DESC, id DESC")
+    )
+    return [dict(row) for row in result.mappings()]
+
+
+@app.get("/incoming/{incoming_id}", response_model=schemas.IncomingDetail)
+def get_incoming_detail(
+    incoming_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    header = db.execute(
+        text("SELECT id, created_at FROM incoming WHERE id = :incoming_id"),
+        {"incoming_id": incoming_id},
+    ).mappings().first()
+
+    if not header:
+        raise HTTPException(status_code=404, detail="Поступление не найдено")
+
+    items = db.execute(
+        text(
+            """
+            SELECT ii.product_id,
+                   COALESCE(p.name, '') AS product_name,
+                   ii.quantity
+            FROM incoming_items ii
+            LEFT JOIN products p ON p.id = ii.product_id
+            WHERE ii.incoming_id = :incoming_id
+            ORDER BY ii.id
+            """
+        ),
+        {"incoming_id": incoming_id},
+    ).mappings().all()
+
+    return {
+        "id": header["id"],
+        "created_at": header["created_at"],
+        "items": [dict(item) for item in items],
+    }
+
 # Reports endpoints
 @app.get("/reports/products")
 def get_product_report(
@@ -591,7 +918,7 @@ def get_product_report(
     
     total_returns = db.query(models.Return).count()
     
-    dispatch_query = db.query(models.Dispatch)
+    dispatch_query = db.query(models.Dispatch).filter(text("COALESCE(dispatches.status, 'pending') = 'sent'"))
     if start_date:
         dispatch_query = dispatch_query.filter(models.Dispatch.created_at >= start_date)
     if end_date:
@@ -617,7 +944,11 @@ def get_manager_report(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    dispatch_query = db.query(models.Dispatch).filter(models.Dispatch.manager_id == manager_id)
+    dispatch_query = (
+        db.query(models.Dispatch)
+        .filter(models.Dispatch.manager_id == manager_id)
+        .filter(text("COALESCE(dispatches.status, 'pending') = 'sent'"))
+    )
     order_query = db.query(models.Order).filter(models.Order.manager_id == manager_id)
     return_query = db.query(models.Return).filter(models.Return.manager_id == manager_id)
     
@@ -670,7 +1001,11 @@ def get_manager_summary_report(
     
     summary = []
     for manager in managers:
-        dispatch_query = db.query(models.Dispatch).filter(models.Dispatch.manager_id == manager.id)
+        dispatch_query = (
+            db.query(models.Dispatch)
+            .filter(models.Dispatch.manager_id == manager.id)
+            .filter(text("COALESCE(dispatches.status, 'pending') = 'sent'"))
+        )
         order_query = db.query(models.Order).filter(models.Order.manager_id == manager.id)
         return_query = db.query(models.Return).filter(models.Return.manager_id == manager.id)
         
