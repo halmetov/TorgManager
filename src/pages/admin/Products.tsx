@@ -10,6 +10,18 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 
+interface DispatchRecord {
+  id: number;
+  manager_id: number;
+  manager_name?: string;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  status: string;
+  created_at: string;
+  accepted_at?: string | null;
+}
+
 interface Product {
   id: number;
   name: string;
@@ -158,6 +170,31 @@ export default function AdminProducts() {
   }, [editForm]);
 
   const productsList = Array.isArray(products) ? (products as Product[]) : [];
+
+  const fetchDispatches = async (): Promise<DispatchRecord[]> => {
+    const client = api as unknown as { get: <T>(endpoint: string) => Promise<T> };
+    return client.get("/dispatch");
+  };
+
+  const {
+    data: dispatches = [],
+    isFetching: dispatchesLoading,
+    error: dispatchError,
+    refetch: refetchDispatches,
+  } = useQuery({
+    queryKey: ["dispatches"],
+    queryFn: fetchDispatches,
+  });
+
+  useEffect(() => {
+    if (dispatchError) {
+      const message = dispatchError instanceof Error ? dispatchError.message : "Не удалось загрузить отправки";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [dispatchError, toast]);
+
+  const formatDate = (iso?: string | null) =>
+    iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—";
 
   return (
     <div className="space-y-6">
@@ -328,6 +365,59 @@ export default function AdminProducts() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <Card>
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <CardTitle>Отправки</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => refetchDispatches()} disabled={dispatchesLoading}>
+            Обновить
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12">№</TableHead>
+                <TableHead>Менеджер</TableHead>
+                <TableHead>Товар</TableHead>
+                <TableHead>Количество</TableHead>
+                <TableHead>Статус</TableHead>
+                <TableHead>Создано</TableHead>
+                <TableHead>Принято</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {dispatchesLoading ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    Загрузка...
+                  </TableCell>
+                </TableRow>
+              ) : dispatches.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    Отправок пока нет
+                  </TableCell>
+                </TableRow>
+              ) : (
+                dispatches.map((dispatch) => (
+                  <TableRow key={dispatch.id}>
+                    <TableCell>{dispatch.id}</TableCell>
+                    <TableCell>{dispatch.manager_name ?? "—"}</TableCell>
+                    <TableCell>{dispatch.product_name}</TableCell>
+                    <TableCell>{dispatch.quantity}</TableCell>
+                    <TableCell>
+                      {dispatch.status === "sent" ? "отправлен" : dispatch.status === "pending" ? "в ожидании" : dispatch.status}
+                    </TableCell>
+                    <TableCell>{formatDate(dispatch.created_at)}</TableCell>
+                    <TableCell>{dispatch.status === "sent" ? formatDate(dispatch.accepted_at) : "—"}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }
