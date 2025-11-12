@@ -153,6 +153,30 @@ class ApiClient {
     return this.get(endpoint);
   }
 
+  async searchProducts(query: string, options?: { signal?: AbortSignal }) {
+    const searchParams = new URLSearchParams();
+    if (query) {
+      searchParams.set('q', query);
+    }
+    searchParams.set('main_only', 'true');
+
+    const endpoint = `/products${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      headers: this.getHeaders(),
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      await this.handleError(response);
+    }
+
+    return response.json();
+  }
+
+  async createIncoming(data: { items: { product_id: number; quantity: number }[] }) {
+    return this.post('/incoming', data);
+  }
+
   async createProduct(data: any) {
     return this.post('/products', data);
   }
