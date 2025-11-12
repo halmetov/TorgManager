@@ -140,25 +140,19 @@ export default function AdminIncoming() {
       return {
         ...row,
         search: value,
-        loading: Boolean(trimmed),
-        options: trimmed ? row.options : [],
+        loading: true,
+        options: [],
         product_id: shouldResetSelection ? null : row.product_id,
         product_name: shouldResetSelection ? "" : row.product_name,
       };
     });
 
-    if (!trimmed) {
-      updateRow(rowId, (row) => ({ ...row, loading: false, options: [] }));
-      return;
-    }
-
-    const timeoutId = setTimeout(async () => {
-      delete searchTimeouts.current[rowId];
+    const executeSearch = async (query?: string) => {
       const controller = new AbortController();
       searchControllers.current[rowId] = controller;
 
       try {
-        const products = (await api.searchProducts(trimmed, { signal: controller.signal })) as ProductSearchResult[];
+        const products = (await api.searchProducts(query, { signal: controller.signal })) as ProductSearchResult[];
         const options = products
           .filter((product) => product.manager_id === null && !product.is_return)
           .map((product) => ({
@@ -182,6 +176,16 @@ export default function AdminIncoming() {
       } finally {
         delete searchControllers.current[rowId];
       }
+    };
+
+    if (!trimmed) {
+      executeSearch();
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      delete searchTimeouts.current[rowId];
+      executeSearch(trimmed);
     }, 300);
 
     searchTimeouts.current[rowId] = timeoutId;
@@ -301,8 +305,8 @@ export default function AdminIncoming() {
                             updateRow(row.id, (current) => ({
                               ...current,
                               open: true,
-                              search: current.product_name || "",
                             }));
+                            handleSearchChange(row.id, "");
                           }
                         }}
                       >
