@@ -25,6 +25,11 @@ interface IncomingRow {
   loading: boolean;
 }
 
+interface ProductSearchResult extends ProductOption {
+  manager_id: number | null;
+  is_return?: boolean;
+}
+
 interface IncomingHistoryItem {
   id: number;
   created_at: string;
@@ -96,8 +101,8 @@ export default function AdminIncoming() {
 
   const searchProducts = async (query: string): Promise<ProductOption[]> => {
     if (!query.trim()) return [];
-    const products = await api.getProducts({ q: query, mainOnly: true });
-    return (products as any[])
+    const products = (await api.getProducts({ q: query, mainOnly: true })) as ProductSearchResult[];
+    return products
       .filter((product) => product.manager_id === null && !product.is_return)
       .map((product) => ({
         id: product.id,
@@ -192,8 +197,8 @@ export default function AdminIncoming() {
       refetchHistory();
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },
-    onError: (error: any) => {
-      const message = error?.message ?? "Не удалось сохранить поступление";
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : "Не удалось сохранить поступление";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
@@ -206,6 +211,8 @@ export default function AdminIncoming() {
 
   const formatDate = (iso?: string | null) =>
     iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—";
+
+  const onPrint = () => window.print();
 
   return (
     <div className="space-y-6">
@@ -334,7 +341,7 @@ export default function AdminIncoming() {
       </Card>
 
       <Dialog open={detailId !== null} onOpenChange={(open) => !open && setDetailId(null)}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl incoming-printable">
           <DialogHeader>
             <DialogTitle>Детали поступления</DialogTitle>
           </DialogHeader>
@@ -361,10 +368,33 @@ export default function AdminIncoming() {
                   ))}
                 </TableBody>
               </Table>
+              <div className="flex justify-end print:hidden">
+                <Button onClick={onPrint} type="button">
+                  Печать
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>
       </Dialog>
+      <style>
+        {`
+          @media print {
+            body * {
+              visibility: hidden;
+            }
+            .incoming-printable, .incoming-printable * {
+              visibility: visible;
+            }
+            .incoming-printable {
+              position: absolute;
+              inset: 0;
+              background: white;
+              padding: 2rem;
+            }
+          }
+        `}
+      </style>
     </div>
   );
 }
