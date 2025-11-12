@@ -80,25 +80,32 @@ class Manager(ManagerBase):
     class Config:
         from_attributes = True
 
-class DispatchItem(BaseModel):
+class DispatchItemCreate(BaseModel):
     product_id: int
     quantity: int
+    price: float
+
 
 class DispatchCreate(BaseModel):
     manager_id: int
-    items: List[DispatchItem]
+    items: List[DispatchItemCreate]
 
 
-class DispatchHistoryItem(BaseModel):
-    id: int
-    manager_id: int
-    manager_name: Optional[str] = None
+class DispatchItemOut(BaseModel):
     product_id: int
     product_name: str
     quantity: int
+    price: float
+
+
+class DispatchOut(BaseModel):
+    id: int
+    manager_id: int
+    manager_name: Optional[str] = None
     status: str
     created_at: datetime
     accepted_at: Optional[datetime] = None
+    items: List[DispatchItemOut]
 
 
 class OrderItem(BaseModel):

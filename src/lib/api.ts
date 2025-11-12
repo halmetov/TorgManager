@@ -153,12 +153,14 @@ class ApiClient {
     return this.get(endpoint);
   }
 
-  async searchProducts(query: string, options?: { signal?: AbortSignal }) {
+  async searchProducts(query?: string, options?: { signal?: AbortSignal; mainOnly?: boolean }) {
     const searchParams = new URLSearchParams();
     if (query) {
       searchParams.set('q', query);
     }
-    searchParams.set('main_only', 'true');
+    if (options?.mainOnly !== false) {
+      searchParams.set('main_only', 'true');
+    }
 
     const endpoint = `/products${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -233,6 +235,18 @@ class ApiClient {
   // Dispatch
   async createDispatch(data: any) {
     return this.post('/dispatch', data);
+  }
+
+  async getDispatches() {
+    return this.get('/dispatch');
+  }
+
+  async getDispatch(id: number) {
+    return this.get(`/dispatch/${id}`);
+  }
+
+  async acceptDispatch(id: number) {
+    return this.post(`/dispatch/${id}/accept`, {});
   }
 
   // Orders
