@@ -249,7 +249,11 @@ export default function AdminIncoming() {
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },
     onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : "Не удалось сохранить поступление";
+      let message = "Не удалось сохранить поступление";
+      if (error && typeof error === "object") {
+        const err = error as { message?: string; data?: { detail?: string } };
+        message = err.data?.detail ?? err.message ?? message;
+      }
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });

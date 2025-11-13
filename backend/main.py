@@ -61,7 +61,8 @@ def ensure_incoming_tables():
     create_incoming = """
         CREATE TABLE IF NOT EXISTS incoming (
             id SERIAL PRIMARY KEY,
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            created_by_admin_id INTEGER REFERENCES users(id)
         )
     """
     create_incoming_items = """
@@ -76,6 +77,20 @@ def ensure_incoming_tables():
     with engine.begin() as connection:
         connection.execute(text(create_incoming))
         connection.execute(text(create_incoming_items))
+
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("incoming")}
+    except Exception:
+        columns = set()
+
+    if "created_by_admin_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE incoming ADD COLUMN IF NOT EXISTS "
+                    "created_by_admin_id INTEGER REFERENCES users(id)"
+                )
+            )
 
 
 ensure_dispatch_columns()
@@ -1164,7 +1179,7 @@ def create_incoming(
     aggregated: Dict[int, int] = {}
     for item in incoming.items:
         if item.quantity <= 0:
-            raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+            raise HTTPException(status_code=400, detail="Количество должно быть больше 0")
         aggregated[item.product_id] = aggregated.get(item.product_id, 0) + item.quantity
 
     product_ids = list(aggregated.keys())
@@ -1176,64 +1191,64 @@ def create_incoming(
     incoming_id: Optional[int] = None
 
     try:
-        with db.begin():
-            products_query = db.query(models.Product).filter(
-                models.Product.id.in_(product_ids),
-                models.Product.manager_id.is_(None),
-                models.Product.is_return.is_(False),
-            )
-            if archived_column is not None:
-                products_query = products_query.filter(archived_column.is_(False))
+        products_query = db.query(models.Product).filter(
+            models.Product.id.in_(product_ids),
+            models.Product.manager_id.is_(None),
+            models.Product.is_return.is_(False),
+        )
+        if archived_column is not None:
+            products_query = products_query.filter(archived_column.is_(False))
 
-            products = products_query.with_for_update().all()
-            found_ids = {product.id for product in products}
-            missing_ids = [str(pid) for pid in product_ids if pid not in found_ids]
-            if missing_ids:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Товары не найдены или недоступны: {', '.join(missing_ids)}",
-                )
+        products = products_query.with_for_update().all()
+        found_ids = {product.id for product in products}
+        if len(found_ids) != len(product_ids):
+            raise HTTPException(status_code=404, detail="Товар не найден")
 
-            created = db.execute(
-                text(
-                    """
-                    INSERT INTO incoming (created_at, created_by_admin_id)
-                    VALUES (:created_at, :created_by_admin_id)
-                    RETURNING id
-                    """
-                ),
-                {"created_at": now, "created_by_admin_id": current_user.id},
-            ).mappings().first()
-
-            if not created:
-                raise HTTPException(status_code=500, detail="Не удалось создать поступление")
-
-            incoming_id = created["id"]
-
-            for product in products:
-                product.quantity += aggregated[product.id]
-
-            item_stmt = text(
+        created = db.execute(
+            text(
                 """
-                INSERT INTO incoming_items (incoming_id, product_id, quantity)
-                VALUES (:incoming_id, :product_id, :quantity)
+                INSERT INTO incoming (created_at, created_by_admin_id)
+                VALUES (:created_at, :created_by_admin_id)
+                RETURNING id
                 """
+            ),
+            {"created_at": now, "created_by_admin_id": current_user.id},
+        ).mappings().first()
+
+        if not created:
+            raise HTTPException(status_code=500, detail="Не удалось создать поступление")
+
+        incoming_id = created["id"]
+
+        for product in products:
+            product.quantity = (product.quantity or 0) + aggregated[product.id]
+
+        item_stmt = text(
+            """
+            INSERT INTO incoming_items (incoming_id, product_id, quantity)
+            VALUES (:incoming_id, :product_id, :quantity)
+            """
+        )
+
+        for product_id, quantity in aggregated.items():
+            db.execute(
+                item_stmt,
+                {
+                    "incoming_id": incoming_id,
+                    "product_id": product_id,
+                    "quantity": quantity,
+                },
             )
 
-            for item in incoming.items:
-                db.execute(
-                    item_stmt,
-                    {
-                        "incoming_id": incoming_id,
-                        "product_id": item.product_id,
-                        "quantity": item.quantity,
-                    },
-                )
+        db.commit()
     except HTTPException:
+        db.rollback()
         raise
     except IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="Конфликт данных при сохранении поступления") from exc
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Database error while creating incoming") from exc
     except SQLAlchemyError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail="Ошибка базы данных") from exc
 
     return {"id": incoming_id, "created_at": now}
