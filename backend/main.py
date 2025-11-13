@@ -1216,6 +1216,8 @@ def create_incoming(
         if len(found_ids) != len(product_ids):
             raise HTTPException(status_code=404, detail="Товар не найден")
 
+        product_map = {product.id: product for product in products}
+
         incoming_row = models.Incoming(
             created_at=now,
             created_by_admin_id=current_user.id,
@@ -1229,10 +1231,17 @@ def create_incoming(
             product.quantity = (product.quantity or 0) + aggregated[product.id]
 
         for product_id, quantity in aggregated.items():
+            product = product_map.get(product_id)
+            if product is None:
+                raise HTTPException(status_code=404, detail=f"Товар {product_id} не найден")
+
+            price_at_time = product.price if product.price is not None else 0
+
             item_row = models.IncomingItem(
                 incoming_id=incoming_id,
                 product_id=product_id,
                 quantity=quantity,
+                price_at_time=price_at_time,
             )
             db.add(item_row)
 

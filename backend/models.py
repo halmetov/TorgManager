@@ -103,6 +103,7 @@ class IncomingItem(Base):
     incoming_id = Column(Integer, ForeignKey("incoming.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, nullable=False)
+    price_at_time = Column(Float, nullable=False)
 
     incoming = relationship("Incoming", back_populates="items")
     product = relationship("Product")
