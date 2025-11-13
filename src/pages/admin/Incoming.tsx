@@ -359,10 +359,9 @@ export default function AdminIncoming() {
                                       value={`${option.id}`}
                                       onSelect={() => handleSelectProduct(row.id, option)}
                                     >
-                                      <div className="flex w-full items-center justify-between gap-3">
-                                        <span className="truncate">{option.name}</span>
-                                        <span className="text-xs text-muted-foreground">Остаток: {option.quantity}</span>
-                                      </div>
+                                      <span className="truncate">
+                                        {`${option.name} – остаток: ${option.quantity}`}
+                                      </span>
                                       {row.product_id === option.id && (
                                         <Check className="ml-2 h-4 w-4 text-primary" />
                                       )}

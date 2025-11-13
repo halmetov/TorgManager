@@ -18,14 +18,18 @@ class ApiClient {
 
   private async handleError(response: Response): Promise<never> {
     let message = `HTTP error! status: ${response.status}`;
+    let errorData: any = null;
     try {
-      const errorData = await response.json();
+      errorData = await response.json();
       message = errorData.detail || message;
     } catch {
       // ignore json parse errors
     }
-    const error = new Error(message) as Error & { status?: number };
+    const error = new Error(message) as Error & { status?: number; data?: any };
     error.status = response.status;
+    if (errorData !== null) {
+      error.data = errorData;
+    }
     throw error;
   }
 
@@ -153,17 +157,9 @@ class ApiClient {
     return this.get(endpoint);
   }
 
-  async searchProducts(query?: string, options?: { signal?: AbortSignal; mainOnly?: boolean }) {
-    const searchParams = new URLSearchParams();
-    if (query) {
-      searchParams.set('q', query);
-    }
-    if (options?.mainOnly !== false) {
-      searchParams.set('main_only', 'true');
-    }
-
-    const endpoint = `/products${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
-    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+  async searchProducts(query?: string, options?: { signal?: AbortSignal }) {
+    const endpoint = `${this.baseUrl}/products${query ? `?q=${encodeURIComponent(query)}` : ''}`;
+    const response = await fetch(endpoint, {
       headers: this.getHeaders(),
       signal: options?.signal,
     });
@@ -177,6 +173,10 @@ class ApiClient {
 
   async createIncoming(data: { items: { product_id: number; quantity: number }[] }) {
     return this.post('/incoming', data);
+  }
+
+  async getManagerStock() {
+    return this.get('/manager/stock');
   }
 
   async createProduct(data: any) {
@@ -255,8 +255,16 @@ class ApiClient {
   }
 
   // Returns
-  async createReturn(data: any) {
+  async createReturn(data: { items: { product_id: number; quantity: number }[] }) {
     return this.post('/returns', data);
+  }
+
+  async getReturns() {
+    return this.get('/returns');
+  }
+
+  async getReturnDetail(id: number) {
+    return this.get(`/returns/${id}`);
   }
 
   // Manager Products

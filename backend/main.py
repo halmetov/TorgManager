@@ -81,6 +81,32 @@ def ensure_incoming_tables():
 ensure_dispatch_columns()
 ensure_incoming_tables()
 
+
+def ensure_return_tables():
+    create_returns = """
+        CREATE TABLE IF NOT EXISTS returns (
+            id SERIAL PRIMARY KEY,
+            manager_id INTEGER REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """
+
+    create_return_items = """
+        CREATE TABLE IF NOT EXISTS return_items (
+            id SERIAL PRIMARY KEY,
+            return_id INTEGER REFERENCES returns(id) ON DELETE CASCADE,
+            product_id INTEGER REFERENCES products(id),
+            quantity INTEGER NOT NULL
+        )
+    """
+
+    with engine.begin() as connection:
+        connection.execute(text(create_returns))
+        connection.execute(text(create_return_items))
+
+
+ensure_return_tables()
+
 app = FastAPI(title="Confectionery Management System")
 
 ALLOWED_ORIGINS = [
@@ -214,12 +240,13 @@ def get_products(
     else:
         query = query.filter(models.Product.is_return.is_(False))
 
-    if q not in (None, ""):
-        query = query.filter(models.Product.name.ilike(f"%{q}%"))
+    search = (q or "").strip()
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(models.Product.name.ilike(pattern))
         return query.order_by(models.Product.name.asc()).limit(50).all()
 
-    query = query.order_by(models.Product.name.asc()).limit(50)
-    return query.all()
+    return query.order_by(models.Product.name.asc()).limit(50).all()
 
 @app.post("/products", response_model=schemas.Product)
 def create_product(
@@ -282,7 +309,10 @@ def delete_product(
 
     has_dispatches = db.query(models.Dispatch).filter(models.Dispatch.product_id == product_id).first()
     has_orders = db.query(models.Order).filter(models.Order.product_id == product_id).first()
-    has_returns = db.query(models.Return).filter(models.Return.product_id == product_id).first()
+    has_returns = db.execute(
+        text("SELECT 1 FROM return_items WHERE product_id = :product_id LIMIT 1"),
+        {"product_id": product_id},
+    ).first()
 
     if has_dispatches or has_orders or has_returns:
         raise HTTPException(
@@ -557,32 +587,50 @@ def create_dispatch(
         current["quantity"] += item.quantity
         current["price"] = float(item.price)
 
-    validated_items: List[Dict[str, Any]] = []
+    product_ids = list(aggregated.keys())
     archived_column = getattr(models.Product, "is_archived", None)
 
-    for product_id, data in aggregated.items():
-        product_query = db.query(models.Product).filter(
-            models.Product.id == product_id,
-            models.Product.manager_id.is_(None),
-            models.Product.is_return.is_(False),
-        )
-        if archived_column is not None:
-            product_query = product_query.filter(archived_column.is_(False))
+    products_query = db.query(models.Product.id, models.Product.quantity).filter(
+        models.Product.id.in_(product_ids),
+        models.Product.manager_id.is_(None),
+        models.Product.is_return.is_(False),
+    )
+    if archived_column is not None:
+        products_query = products_query.filter(archived_column.is_(False))
 
-        product = product_query.first()
-        if not product:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Product {product_id} not found in admin inventory",
+    products = products_query.all()
+    found_ids = {row.id for row in products}
+    missing_ids = [str(pid) for pid in product_ids if pid not in found_ids]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Product(s) not found in admin inventory: {', '.join(missing_ids)}",
+        )
+
+    availability = {row.id: row.quantity for row in products}
+    insufficient: List[Dict[str, Any]] = []
+    for product_id, data in aggregated.items():
+        available = availability.get(product_id, 0)
+        requested = data["quantity"]
+        if requested > available:
+            insufficient.append(
+                {
+                    "product_id": product_id,
+                    "requested": requested,
+                    "available": available,
+                }
             )
 
-        validated_items.append(
-            {
-                "product_id": product_id,
-                "quantity": data["quantity"],
-                "price": data["price"],
-            }
+    if insufficient:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "INSUFFICIENT_STOCK", "items": insufficient},
         )
+
+    validated_items: List[Dict[str, Any]] = [
+        {"product_id": product_id, "quantity": data["quantity"], "price": data["price"]}
+        for product_id, data in aggregated.items()
+    ]
 
     now = datetime.now(timezone.utc)
 
@@ -875,7 +923,34 @@ def create_order(
     return {"message": "Order created successfully"}
 
 # Returns endpoints
-@app.post("/returns")
+@app.get("/manager/stock", response_model=List[schemas.ManagerStockItem])
+def get_manager_stock(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    archived_column = getattr(models.Product, "is_archived", None)
+    products_query = db.query(models.Product).filter(
+        models.Product.manager_id == current_user.id,
+        models.Product.is_return.is_(False),
+    )
+    if archived_column is not None:
+        products_query = products_query.filter(archived_column.is_(False))
+
+    products = products_query.order_by(models.Product.name.asc()).all()
+    return [
+        {
+            "product_id": product.id,
+            "name": product.name,
+            "quantity": product.quantity,
+        }
+        for product in products
+    ]
+
+
+@app.post("/returns", response_model=schemas.ReturnCreated)
 def create_return(
     return_data: schemas.ReturnCreate,
     current_user: models.User = Depends(get_current_user),
@@ -883,53 +958,195 @@ def create_return(
 ):
     if current_user.role != "manager":
         raise HTTPException(status_code=403, detail="Only managers can create returns")
-    
+
+    if not return_data.items:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    aggregated: Dict[int, int] = {}
     for item in return_data.items:
-        # Get product info
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id,
-            models.Product.manager_id == current_user.id
-        ).first()
-        
-        if not product:
-            raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found in your inventory")
-        
-        if product.quantity < item.quantity:
-            raise HTTPException(status_code=400, detail=f"Insufficient quantity for product {product.name}")
-        
-        # Deduct from manager's regular inventory
-        product.quantity -= item.quantity
-        
-        # Find or create return product in manager's inventory
-        return_product = db.query(models.Product).filter(
-            models.Product.name == product.name,
-            models.Product.manager_id == current_user.id,
-            models.Product.is_return == True
-        ).first()
-        
-        if return_product:
-            return_product.quantity += item.quantity
-        else:
-            return_product = models.Product(
-                name=product.name,
-                quantity=item.quantity,
-                price=product.price,
-                manager_id=current_user.id,
-                is_return=True
+        if item.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+        aggregated[item.product_id] = aggregated.get(item.product_id, 0) + item.quantity
+
+    product_ids = list(aggregated.keys())
+    archived_column = getattr(models.Product, "is_archived", None)
+    now = datetime.now(timezone.utc)
+    return_id: Optional[int] = None
+
+    try:
+        with db.begin():
+            manager_products_query = db.query(models.Product).filter(
+                models.Product.id.in_(product_ids),
+                models.Product.manager_id == current_user.id,
+                models.Product.is_return.is_(False),
             )
-            db.add(return_product)
-        
-        # Create return record for admin reports
-        db_return = models.Return(
-            manager_id=current_user.id,
-            shop_id=return_data.shop_id,
-            product_id=item.product_id,
-            quantity=item.quantity
-        )
-        db.add(db_return)
-    
-    db.commit()
-    return {"message": "Return created successfully"}
+            if archived_column is not None:
+                manager_products_query = manager_products_query.filter(archived_column.is_(False))
+
+            manager_products = manager_products_query.with_for_update().all()
+            manager_map = {product.id: product for product in manager_products}
+            missing_ids = [str(pid) for pid in product_ids if pid not in manager_map]
+            if missing_ids:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Товары не найдены в остатках менеджера: {', '.join(missing_ids)}",
+                )
+
+            for product_id, quantity in aggregated.items():
+                available = manager_map[product_id].quantity
+                if quantity > available:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Недостаточно остатка для товара {manager_map[product_id].name}",
+                    )
+
+            base_names = {manager_map[pid].name for pid in product_ids}
+            base_query = db.query(models.Product).filter(
+                models.Product.manager_id.is_(None),
+                models.Product.is_return.is_(False),
+                models.Product.name.in_(base_names),
+            )
+            if archived_column is not None:
+                base_query = base_query.filter(archived_column.is_(False))
+
+            base_products = base_query.with_for_update().all()
+            base_map = {product.name: product for product in base_products}
+            missing_base = [name for name in base_names if name not in base_map]
+            if missing_base:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Не найден основной склад для товаров: {', '.join(missing_base)}",
+                )
+
+            created = db.execute(
+                text(
+                    """
+                    INSERT INTO returns (manager_id, created_at)
+                    VALUES (:manager_id, :created_at)
+                    RETURNING id
+                    """
+                ),
+                {"manager_id": current_user.id, "created_at": now},
+            ).mappings().first()
+
+            if not created:
+                raise HTTPException(status_code=500, detail="Не удалось создать возврат")
+
+            return_id = created["id"]
+
+            item_stmt = text(
+                """
+                INSERT INTO return_items (return_id, product_id, quantity)
+                VALUES (:return_id, :product_id, :quantity)
+                """
+            )
+
+            for product_id, quantity in aggregated.items():
+                manager_product = manager_map[product_id]
+                base_product = base_map[manager_product.name]
+
+                manager_product.quantity -= quantity
+                base_product.quantity += quantity
+
+                db.execute(
+                    item_stmt,
+                    {
+                        "return_id": return_id,
+                        "product_id": base_product.id,
+                        "quantity": quantity,
+                    },
+                )
+    except HTTPException:
+        raise
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Конфликт данных при сохранении возврата") from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=400, detail="Ошибка базы данных") from exc
+
+    return {"id": return_id, "created_at": now}
+
+
+@app.get("/returns", response_model=List[schemas.ReturnListItem])
+def list_returns(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    base_query = """
+        SELECT r.id,
+               r.manager_id,
+               COALESCE(u.full_name, u.username) AS manager_name,
+               r.created_at
+        FROM returns r
+        LEFT JOIN users u ON u.id = r.manager_id
+        WHERE 1=1
+    """
+    params: Dict[str, Any] = {}
+
+    if current_user.role == "manager":
+        base_query += " AND r.manager_id = :manager_id"
+        params["manager_id"] = current_user.id
+
+    base_query += " ORDER BY r.created_at DESC, r.id DESC"
+
+    rows = db.execute(text(base_query), params).mappings().all()
+    return [dict(row) for row in rows]
+
+
+@app.get("/returns/{return_id}", response_model=schemas.ReturnDetail)
+def get_return_detail(
+    return_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    header = db.execute(
+        text(
+            """
+            SELECT r.id,
+                   r.manager_id,
+                   COALESCE(u.full_name, u.username) AS manager_name,
+                   r.created_at
+            FROM returns r
+            LEFT JOIN users u ON u.id = r.manager_id
+            WHERE r.id = :return_id
+            """
+        ),
+        {"return_id": return_id},
+    ).mappings().first()
+
+    if not header:
+        raise HTTPException(status_code=404, detail="Возврат не найден")
+
+    if current_user.role == "manager" and header["manager_id"] != current_user.id:
+        raise HTTPException(status_code=403, detail="Нет доступа к возврату")
+
+    if current_user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    items = db.execute(
+        text(
+            """
+            SELECT ri.product_id,
+                   COALESCE(p.name, '') AS product_name,
+                   ri.quantity
+            FROM return_items ri
+            LEFT JOIN products p ON p.id = ri.product_id
+            WHERE ri.return_id = :return_id
+            ORDER BY ri.id
+            """
+        ),
+        {"return_id": return_id},
+    ).mappings().all()
+
+    return {
+        "id": header["id"],
+        "created_at": header["created_at"],
+        "manager_id": header["manager_id"],
+        "manager_name": header["manager_name"],
+        "items": [dict(item) for item in items],
+    }
 
 # Incoming endpoints
 @app.post("/incoming", response_model=schemas.IncomingCreated)
@@ -944,46 +1161,68 @@ def create_incoming(
     if not incoming.items:
         raise HTTPException(status_code=400, detail="Необходимо указать товары")
 
+    aggregated: Dict[int, int] = {}
+    for item in incoming.items:
+        if item.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+        aggregated[item.product_id] = aggregated.get(item.product_id, 0) + item.quantity
+
+    product_ids = list(aggregated.keys())
+    if not product_ids:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    archived_column = getattr(models.Product, "is_archived", None)
     now = datetime.now(timezone.utc)
     incoming_id: Optional[int] = None
 
     try:
         with db.begin():
-            result = db.execute(
-                text(
-                    "INSERT INTO incoming (created_at, created_by_admin_id) "
-                    "VALUES (:created_at, :created_by_admin_id) RETURNING id"
-                ),
-                {"created_at": now, "created_by_admin_id": current_user.id},
+            products_query = db.query(models.Product).filter(
+                models.Product.id.in_(product_ids),
+                models.Product.manager_id.is_(None),
+                models.Product.is_return.is_(False),
             )
-            incoming_id = result.scalar_one()
+            if archived_column is not None:
+                products_query = products_query.filter(archived_column.is_(False))
 
-            for item in incoming.items:
-                if item.quantity <= 0:
-                    raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
-
-                product = (
-                    db.query(models.Product)
-                    .filter(
-                        models.Product.id == item.product_id,
-                        models.Product.manager_id.is_(None),
-                    )
-                    .with_for_update()
-                    .first()
+            products = products_query.with_for_update().all()
+            found_ids = {product.id for product in products}
+            missing_ids = [str(pid) for pid in product_ids if pid not in found_ids]
+            if missing_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Товары не найдены или недоступны: {', '.join(missing_ids)}",
                 )
 
-                if not product:
-                    raise HTTPException(status_code=400, detail=f"Товар {item.product_id} не найден")
+            created = db.execute(
+                text(
+                    """
+                    INSERT INTO incoming (created_at, created_by_admin_id)
+                    VALUES (:created_at, :created_by_admin_id)
+                    RETURNING id
+                    """
+                ),
+                {"created_at": now, "created_by_admin_id": current_user.id},
+            ).mappings().first()
 
-                product.quantity += item.quantity
+            if not created:
+                raise HTTPException(status_code=500, detail="Не удалось создать поступление")
 
+            incoming_id = created["id"]
+
+            for product in products:
+                product.quantity += aggregated[product.id]
+
+            item_stmt = text(
+                """
+                INSERT INTO incoming_items (incoming_id, product_id, quantity)
+                VALUES (:incoming_id, :product_id, :quantity)
+                """
+            )
+
+            for item in incoming.items:
                 db.execute(
-                    text(
-                        """
-                        INSERT INTO incoming_items (incoming_id, product_id, quantity)
-                        VALUES (:incoming_id, :product_id, :quantity)
-                        """
-                    ),
+                    item_stmt,
                     {
                         "incoming_id": incoming_id,
                         "product_id": item.product_id,
@@ -992,10 +1231,10 @@ def create_incoming(
                 )
     except HTTPException:
         raise
-    except IntegrityError:
-        raise HTTPException(status_code=409, detail="Database constraint error")
-    except SQLAlchemyError:
-        raise HTTPException(status_code=400, detail="Database error")
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Конфликт данных при сохранении поступления") from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=400, detail="Ошибка базы данных") from exc
 
     return {"id": incoming_id, "created_at": now}
 
@@ -1068,7 +1307,9 @@ def get_product_report(
         models.Product.is_return == False
     ).count()
     
-    total_returns = db.query(models.Return).count()
+    total_returns = db.execute(
+        text("SELECT COALESCE(SUM(quantity), 0) AS total FROM return_items")
+    ).scalar() or 0
     
     dispatch_query = db.query(models.Dispatch).filter(text("COALESCE(dispatches.status, 'pending') = 'sent'"))
     if start_date:
@@ -1102,20 +1343,32 @@ def get_manager_report(
         .filter(text("COALESCE(dispatches.status, 'pending') = 'sent'"))
     )
     order_query = db.query(models.Order).filter(models.Order.manager_id == manager_id)
-    return_query = db.query(models.Return).filter(models.Return.manager_id == manager_id)
+    returns_rows = db.execute(
+        text(
+            """
+            SELECT ri.product_id,
+                   ri.quantity,
+                   r.created_at
+            FROM returns r
+            JOIN return_items ri ON ri.return_id = r.id
+            WHERE r.manager_id = :manager_id
+              AND (:start_date IS NULL OR r.created_at >= :start_date)
+              AND (:end_date IS NULL OR r.created_at <= :end_date)
+            ORDER BY r.created_at DESC, ri.id
+            """
+        ),
+        {"manager_id": manager_id, "start_date": start_date, "end_date": end_date},
+    ).mappings().all()
     
     if start_date:
         dispatch_query = dispatch_query.filter(models.Dispatch.created_at >= start_date)
         order_query = order_query.filter(models.Order.created_at >= start_date)
-        return_query = return_query.filter(models.Return.created_at >= start_date)
     if end_date:
         dispatch_query = dispatch_query.filter(models.Dispatch.created_at <= end_date)
         order_query = order_query.filter(models.Order.created_at <= end_date)
-        return_query = return_query.filter(models.Return.created_at <= end_date)
-    
+
     dispatches = dispatch_query.all()
     orders = order_query.all()
-    returns = return_query.all()
     
     # Get product names for dispatches
     dispatches_with_names = []
@@ -1129,14 +1382,26 @@ def get_manager_report(
             "product_name": product.name if product else "Unknown"
         })
     
+    returns_with_products = []
+    for row in returns_rows:
+        product = db.query(models.Product).filter(models.Product.id == row["product_id"]).first()
+        returns_with_products.append(
+            {
+                "product_id": row["product_id"],
+                "quantity": row["quantity"],
+                "created_at": row["created_at"],
+                "product_name": product.name if product else "Unknown",
+            }
+        )
+
     return {
         "manager_id": manager_id,
         "total_received": sum(d.quantity for d in dispatches),
         "total_delivered": sum(o.quantity for o in orders),
-        "total_returns": sum(r.quantity for r in returns),
+        "total_returns": sum(item["quantity"] for item in returns_rows),
         "dispatches": dispatches_with_names,
         "orders": orders,
-        "returns": returns
+        "returns": returns_with_products,
     }
 
 @app.get("/reports/manager-summary")
@@ -1159,27 +1424,41 @@ def get_manager_summary_report(
             .filter(text("COALESCE(dispatches.status, 'pending') = 'sent'"))
         )
         order_query = db.query(models.Order).filter(models.Order.manager_id == manager.id)
-        return_query = db.query(models.Return).filter(models.Return.manager_id == manager.id)
+        returns_rows = db.execute(
+            text(
+                """
+                SELECT ri.quantity,
+                       r.created_at
+                FROM returns r
+                JOIN return_items ri ON ri.return_id = r.id
+                WHERE r.manager_id = :manager_id
+                  AND (:start_date IS NULL OR r.created_at >= :start_date)
+                  AND (:end_date IS NULL OR r.created_at <= :end_date)
+                """
+            ),
+            {
+                "manager_id": manager.id,
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+        ).mappings().all()
         
         if start_date:
             dispatch_query = dispatch_query.filter(models.Dispatch.created_at >= start_date)
             order_query = order_query.filter(models.Order.created_at >= start_date)
-            return_query = return_query.filter(models.Return.created_at >= start_date)
         if end_date:
             dispatch_query = dispatch_query.filter(models.Dispatch.created_at <= end_date)
             order_query = order_query.filter(models.Order.created_at <= end_date)
-            return_query = return_query.filter(models.Return.created_at <= end_date)
-        
+
         dispatches = dispatch_query.all()
         orders = order_query.all()
-        returns = return_query.all()
         
         summary.append({
             "manager_id": manager.id,
             "manager_name": manager.full_name,
             "total_received": sum(d.quantity for d in dispatches),
             "total_delivered": sum(o.quantity for o in orders),
-            "total_returns": sum(r.quantity for r in returns)
+            "total_returns": sum(row["quantity"] for row in returns_rows),
         })
     
     return summary
@@ -1195,31 +1474,47 @@ def get_returns_report(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    query = db.query(models.Return)
-    
+    base_query = """
+        SELECT r.id,
+               r.created_at,
+               r.manager_id,
+               COALESCE(u.full_name, u.username) AS manager_name,
+               COALESCE(u.username, '') AS manager_username,
+               ri.product_id,
+               ri.quantity
+        FROM returns r
+        JOIN return_items ri ON ri.return_id = r.id
+        LEFT JOIN users u ON u.id = r.manager_id
+        WHERE 1=1
+    """
+    params: Dict[str, Any] = {}
+
     if start_date:
-        query = query.filter(models.Return.created_at >= start_date)
+        base_query += " AND r.created_at >= :start_date"
+        params["start_date"] = start_date
     if end_date:
-        query = query.filter(models.Return.created_at <= end_date)
+        base_query += " AND r.created_at <= :end_date"
+        params["end_date"] = end_date
     if manager_id:
-        query = query.filter(models.Return.manager_id == manager_id)
-    
-    returns = query.order_by(models.Return.created_at.desc()).all()
+        base_query += " AND r.manager_id = :manager_id"
+        params["manager_id"] = manager_id
+
+    base_query += " ORDER BY r.created_at DESC, r.id DESC, ri.id"
+
+    returns = db.execute(text(base_query), params).mappings().all()
     result = []
     
     for return_item in returns:
-        manager = db.query(models.User).filter(models.User.id == return_item.manager_id).first()
-        shop = db.query(models.Shop).filter(models.Shop.id == return_item.shop_id).first()
-        product = db.query(models.Product).filter(models.Product.id == return_item.product_id).first()
-        
+        product = db.query(models.Product).filter(models.Product.id == return_item["product_id"]).first()
+
         result.append({
-            "id": return_item.id,
-            "created_at": return_item.created_at.isoformat(),
-            "manager_name": manager.full_name if manager else "Unknown",
-            "manager_username": manager.username if manager else "Unknown",
-            "shop_name": shop.name if shop else "Unknown",
+            "id": return_item["id"],
+            "created_at": return_item["created_at"].isoformat() if return_item["created_at"] else None,
+            "manager_name": return_item["manager_name"],
+            "manager_username": return_item["manager_username"],
+            "shop_name": None,
             "product_name": product.name if product else "Unknown",
-            "quantity": return_item.quantity
+            "quantity": return_item["quantity"],
         })
     
     return result

@@ -1,156 +1,306 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2 } from "lucide-react";
+
+interface ManagerStockItem {
+  product_id: number;
+  name: string;
+  quantity: number;
+}
+
+interface ReturnHistoryItem {
+  id: number;
+  manager_id: number;
+  manager_name?: string | null;
+  created_at: string;
+}
+
+interface ReturnDetailItem {
+  product_id: number;
+  product_name: string;
+  quantity: number;
+}
+
+interface ReturnDetail {
+  id: number;
+  manager_id: number;
+  manager_name?: string | null;
+  created_at: string;
+  items: ReturnDetailItem[];
+}
+
+const fmt = (iso?: string | null) =>
+  iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—";
 
 export default function ManagerReturns() {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [shopId, setShopId] = useState("");
-  const [items, setItems] = useState([{ product_id: "", quantity: "" }]);
+  const [quantities, setQuantities] = useState<Record<number, string>>({});
+  const [detailId, setDetailId] = useState<number | null>(null);
 
-  const { data: products = [] } = useQuery({
-    queryKey: ["managerProducts"],
-    queryFn: () => api.getManagerProducts(),
+  const {
+    data: stock = [],
+    isFetching: stockLoading,
+    error: stockError,
+    refetch: refetchStock,
+  } = useQuery<ManagerStockItem[]>({
+    queryKey: ["manager", "stock"],
+    queryFn: () => api.getManagerStock() as Promise<ManagerStockItem[]>,
   });
 
-  // Filter only non-return products for returns
-  const availableProducts = (products as any[]).filter((p: any) => !p.is_return && p.quantity > 0);
+  useEffect(() => {
+    if (stockError) {
+      const message = stockError instanceof Error ? stockError.message : "Не удалось загрузить остатки";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [stockError, toast]);
 
-  const { data: shops = [] } = useQuery({
-    queryKey: ["shops"],
-    queryFn: () => api.getShops(),
+  const {
+    data: history = [],
+    isFetching: historyLoading,
+    error: historyError,
+    refetch: refetchHistory,
+  } = useQuery<ReturnHistoryItem[]>({
+    queryKey: ["returns", "manager"],
+    queryFn: () => api.getReturns() as Promise<ReturnHistoryItem[]>,
   });
+
+  useEffect(() => {
+    if (historyError) {
+      const message = historyError instanceof Error ? historyError.message : "Не удалось загрузить историю возвратов";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [historyError, toast]);
+
+  const {
+    data: detail,
+    isFetching: detailLoading,
+    error: detailError,
+  } = useQuery<ReturnDetail>({
+    queryKey: ["return", "manager", detailId],
+    queryFn: () => api.getReturnDetail(detailId!) as Promise<ReturnDetail>,
+    enabled: detailId !== null,
+  });
+
+  useEffect(() => {
+    if (detailError) {
+      const message = detailError instanceof Error ? detailError.message : "Не удалось загрузить детали возврата";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [detailError, toast]);
+
+  const handleQuantityChange = (productId: number, value: string) => {
+    setQuantities((prev) => ({ ...prev, [productId]: value }));
+  };
+
+  const selectedItems = useMemo(() => {
+    return stock
+      .map((item) => ({
+        product_id: item.product_id,
+        name: item.name,
+        available: item.quantity,
+        requested: Number(quantities[item.product_id] ?? 0),
+      }))
+      .filter((item) => !Number.isNaN(item.requested) && item.requested > 0);
+  }, [stock, quantities]);
 
   const returnMutation = useMutation({
-    mutationFn: (data: any) => api.createReturn(data),
+    mutationFn: (payload: { items: { product_id: number; quantity: number }[] }) => api.createReturn(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["products"] });
-      toast({ title: "Возврат зарегистрирован" });
-      setShopId("");
-      setItems([{ product_id: "", quantity: "" }]);
+      toast({ title: "Возврат оформлен" });
+      setQuantities({});
+      refetchStock();
+      refetchHistory();
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : "Не удалось оформить возврат";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
 
-  const handleAddItem = () => {
-    setItems([...items, { product_id: "", quantity: "" }]);
-  };
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (returnMutation.isPending) return;
 
-  const handleRemoveItem = (index: number) => {
-    setItems(items.filter((_, i) => i !== index));
-  };
+    if (selectedItems.length === 0) {
+      toast({ title: "Ошибка", description: "Укажите количество хотя бы для одного товара", variant: "destructive" });
+      return;
+    }
 
-  const handleItemChange = (index: number, field: string, value: string) => {
-    const newItems = [...items];
-    newItems[index] = { ...newItems[index], [field]: value };
-    setItems(newItems);
-  };
+    const overLimit = selectedItems.find((item) => item.requested > item.available);
+    if (overLimit) {
+      toast({
+        title: "Ошибка",
+        description: `${overLimit.name}: в наличии ${overLimit.available}, попытка вернуть ${overLimit.requested}`,
+        variant: "destructive",
+      });
+      return;
+    }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
     returnMutation.mutate({
-      shop_id: parseInt(shopId),
-      items: items.map((item) => ({
-        product_id: parseInt(item.product_id),
-        quantity: parseInt(item.quantity),
-      })),
+      items: selectedItems.map((item) => ({ product_id: item.product_id, quantity: item.requested })),
     });
   };
 
+  const handleCloseDetail = (open: boolean) => {
+    if (!open) {
+      setDetailId(null);
+    }
+  };
+
+  const handlePrint = () => window.print();
+
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Возврат</h1>
+      <h1 className="text-3xl font-bold">Возврат остатков</h1>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <CardTitle>Оформить возврат</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => refetchStock()} disabled={stockLoading}>
+            Обновить остатки
+          </Button>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <Label>Магазин</Label>
-              <Select value={shopId} onValueChange={setShopId} required>
-                <SelectTrigger>
-                  <SelectValue placeholder="Выберите магазин" />
-                </SelectTrigger>
-                <SelectContent className="bg-background z-50">
-                  {(shops as any[]).map((shop: any) => (
-                    <SelectItem key={shop.id} value={shop.id.toString()}>
-                      {shop.name} - {shop.address}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Товар</TableHead>
+                  <TableHead className="w-32">Доступно</TableHead>
+                  <TableHead className="w-40">К возврату</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {stockLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      Загрузка...
+                    </TableCell>
+                  </TableRow>
+                ) : stock.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      Нет товаров для возврата
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  stock.map((item) => (
+                    <TableRow key={item.product_id}>
+                      <TableCell>{item.name}</TableCell>
+                      <TableCell>{item.quantity}</TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={item.quantity}
+                          value={quantities[item.product_id] ?? ""}
+                          onChange={(event) => handleQuantityChange(item.product_id, event.target.value)}
+                          placeholder="0"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+
+            <div className="flex justify-end">
+              <Button type="submit" className="w-full md:w-56" disabled={returnMutation.isPending}>
+                {returnMutation.isPending ? "Отправка..." : "Отправить возврат"}
+              </Button>
             </div>
-
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <Label>Возвращаемые товары</Label>
-                <Button type="button" variant="outline" size="sm" onClick={handleAddItem}>
-                  <Plus className="h-4 w-4" />
-                  Добавить товар
-                </Button>
-              </div>
-
-              {items.map((item, index) => (
-                <div key={index} className="flex gap-4 items-end">
-                  <div className="flex-1">
-                    <Label>Товар</Label>
-                    <Select
-                      value={item.product_id}
-                      onValueChange={(value) => handleItemChange(index, "product_id", value)}
-                      required
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Выберите товар" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-background z-50">
-                        {availableProducts.map((product: any) => (
-                          <SelectItem key={product.id} value={product.id.toString()}>
-                            {product.name} (в наличии: {product.quantity})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="w-32">
-                    <Label>Количество</Label>
-                    <Input
-                      type="number"
-                      value={item.quantity}
-                      onChange={(e) => handleItemChange(index, "quantity", e.target.value)}
-                      placeholder="0"
-                      required
-                    />
-                  </div>
-
-                  {items.length > 1 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleRemoveItem(index)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            <Button type="submit" className="w-full h-12 text-lg">
-              Возврат
-            </Button>
           </form>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <CardTitle>История возвратов</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => refetchHistory()} disabled={historyLoading}>
+            Обновить
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12">№</TableHead>
+                <TableHead>Дата и время</TableHead>
+                <TableHead className="w-32 text-right">Подробнее</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {historyLoading ? (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-muted-foreground">
+                    Загрузка...
+                  </TableCell>
+                </TableRow>
+              ) : history.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-muted-foreground">
+                    Возвратов пока нет
+                  </TableCell>
+                </TableRow>
+              ) : (
+                history.map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell>{item.id}</TableCell>
+                    <TableCell>{fmt(item.created_at)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button size="sm" variant="outline" onClick={() => setDetailId(item.id)}>
+                        Подробнее
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Dialog open={detailId !== null} onOpenChange={handleCloseDetail}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Детали возврата</DialogTitle>
+          </DialogHeader>
+          {detailLoading || !detail ? (
+            <p className="text-sm text-muted-foreground">Загрузка...</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">Создано: {fmt(detail.created_at)}</p>
+                <Button variant="outline" size="sm" onClick={handlePrint}>
+                  Печать
+                </Button>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Товар</TableHead>
+                    <TableHead className="w-32">Количество</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {detail.items.map((item) => (
+                    <TableRow key={item.product_id}>
+                      <TableCell>{item.product_name}</TableCell>
+                      <TableCell>{item.quantity}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

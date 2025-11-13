@@ -118,13 +118,45 @@ class OrderCreate(BaseModel):
     refrigerator_number: str
     items: List[OrderItem]
 
-class ReturnItem(BaseModel):
+class ManagerStockItem(BaseModel):
+    product_id: int
+    name: str
+    quantity: int
+
+
+class ReturnItemCreate(BaseModel):
     product_id: int
     quantity: int
 
+
 class ReturnCreate(BaseModel):
-    shop_id: int
-    items: List[ReturnItem]
+    items: List[ReturnItemCreate]
+
+
+class ReturnCreated(BaseModel):
+    id: int
+    created_at: datetime
+
+
+class ReturnListItem(BaseModel):
+    id: int
+    created_at: datetime
+    manager_id: int
+    manager_name: Optional[str] = None
+
+
+class ReturnDetailItem(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: int
+
+
+class ReturnDetail(BaseModel):
+    id: int
+    created_at: datetime
+    manager_id: int
+    manager_name: Optional[str] = None
+    items: List[ReturnDetailItem]
 
 
 class IncomingItemCreate(BaseModel):
