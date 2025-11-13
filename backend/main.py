@@ -1216,54 +1216,45 @@ def create_incoming(
         if len(found_ids) != len(product_ids):
             raise HTTPException(status_code=404, detail="Товар не найден")
 
-        created = db.execute(
-            text(
-                """
-                INSERT INTO incoming (created_at, created_by_admin_id)
-                VALUES (:created_at, :created_by_admin_id)
-                RETURNING id
-                """
-            ),
-            {"created_at": now, "created_by_admin_id": current_user.id},
-        ).mappings().first()
+        incoming_row = models.Incoming(
+            created_at=now,
+            created_by_admin_id=current_user.id,
+        )
+        db.add(incoming_row)
+        db.flush()
 
-        if not created:
-            raise HTTPException(status_code=500, detail="Не удалось создать поступление")
-
-        incoming_id = created["id"]
+        incoming_id = incoming_row.id
 
         for product in products:
             product.quantity = (product.quantity or 0) + aggregated[product.id]
 
-        item_stmt = text(
-            """
-            INSERT INTO incoming_items (incoming_id, product_id, quantity)
-            VALUES (:incoming_id, :product_id, :quantity)
-            """
-        )
-
         for product_id, quantity in aggregated.items():
-            db.execute(
-                item_stmt,
-                {
-                    "incoming_id": incoming_id,
-                    "product_id": product_id,
-                    "quantity": quantity,
-                },
+            item_row = models.IncomingItem(
+                incoming_id=incoming_id,
+                product_id=product_id,
+                quantity=quantity,
             )
+            db.add(item_row)
 
         db.commit()
+        db.refresh(incoming_row)
     except HTTPException:
         db.rollback()
         raise
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Database error while creating incoming") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"Database integrity error while creating incoming: {exc.orig}",
+        ) from exc
     except SQLAlchemyError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Ошибка базы данных") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ошибка базы данных при создании поступления: {exc}",
+        ) from exc
 
-    return {"id": incoming_id, "created_at": now}
+    return {"id": incoming_id, "created_at": incoming_row.created_at}
 
 
 @app.get("/incoming", response_model=List[schemas.IncomingListItem])
