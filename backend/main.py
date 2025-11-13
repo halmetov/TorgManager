@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
+from decimal import Decimal
 import os
 import secrets
 import models
@@ -146,6 +147,20 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 1440
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+def _to_float(value: Any) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _to_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    return _to_float(value)
 
 # Helper functions
 def verify_password(plain_password, hashed_password):
@@ -960,9 +975,146 @@ def get_manager_stock(
             "product_id": product.id,
             "name": product.name,
             "quantity": product.quantity,
+            "price": product.price,
         }
         for product in products
     ]
+
+
+def _fetch_shop_orders(
+    db: Session,
+    *,
+    manager_id: Optional[int] = None,
+    order_ids: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    query = db.query(models.ShopOrder).options(
+        joinedload(models.ShopOrder.items).joinedload(models.ShopOrderItem.product),
+        joinedload(models.ShopOrder.shop),
+    )
+
+    if manager_id is not None:
+        query = query.filter(models.ShopOrder.manager_id == manager_id)
+
+    if order_ids is not None:
+        query = query.filter(models.ShopOrder.id.in_(order_ids))
+
+    orders = (
+        query.order_by(models.ShopOrder.created_at.desc(), models.ShopOrder.id.desc())
+        .all()
+    )
+
+    results: List[Dict[str, Any]] = []
+    for order in orders:
+        items = sorted(order.items, key=lambda item: item.id)
+        results.append(
+            {
+                "id": order.id,
+                "manager_id": order.manager_id,
+                "shop_id": order.shop_id,
+                "shop_name": order.shop.name if order.shop else "",
+                "created_at": order.created_at,
+                "items": [
+                    {
+                        "product_id": item.product_id,
+                        "product_name": item.product.name if item.product else "",
+                        "quantity": _to_float(item.quantity),
+                        "price": _to_optional_float(item.price),
+                    }
+                    for item in items
+                ],
+            }
+        )
+
+    return results
+
+
+def _fetch_shop_returns(
+    db: Session,
+    *,
+    manager_id: Optional[int] = None,
+    return_ids: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    query = db.query(models.ShopReturn).options(
+        joinedload(models.ShopReturn.items).joinedload(models.ShopReturnItem.product),
+        joinedload(models.ShopReturn.shop),
+    )
+
+    if manager_id is not None:
+        query = query.filter(models.ShopReturn.manager_id == manager_id)
+
+    if return_ids is not None:
+        query = query.filter(models.ShopReturn.id.in_(return_ids))
+
+    returns = (
+        query.order_by(models.ShopReturn.created_at.desc(), models.ShopReturn.id.desc())
+        .all()
+    )
+
+    results: List[Dict[str, Any]] = []
+    for return_doc in returns:
+        items = sorted(return_doc.items, key=lambda item: item.id)
+        results.append(
+            {
+                "id": return_doc.id,
+                "manager_id": return_doc.manager_id,
+                "shop_id": return_doc.shop_id,
+                "shop_name": return_doc.shop.name if return_doc.shop else "",
+                "created_at": return_doc.created_at,
+                "items": [
+                    {
+                        "product_id": item.product_id,
+                        "product_name": item.product.name if item.product else "",
+                        "quantity": _to_float(item.quantity),
+                    }
+                    for item in items
+                ],
+            }
+        )
+
+    return results
+
+
+def _fetch_manager_returns(
+    db: Session,
+    *,
+    manager_id: Optional[int] = None,
+    return_ids: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    query = db.query(models.ManagerReturn).options(
+        joinedload(models.ManagerReturn.items).joinedload(models.ManagerReturnItem.product)
+    )
+
+    if manager_id is not None:
+        query = query.filter(models.ManagerReturn.manager_id == manager_id)
+
+    if return_ids is not None:
+        query = query.filter(models.ManagerReturn.id.in_(return_ids))
+
+    returns = (
+        query.order_by(models.ManagerReturn.created_at.desc(), models.ManagerReturn.id.desc())
+        .all()
+    )
+
+    results: List[Dict[str, Any]] = []
+    for return_doc in returns:
+        items = sorted(return_doc.items, key=lambda item: item.id)
+        results.append(
+            {
+                "id": return_doc.id,
+                "manager_id": return_doc.manager_id,
+                "created_at": return_doc.created_at,
+                "items": [
+                    {
+                        "product_id": item.product_id,
+                        "product_name": item.product.name if item.product else "",
+                        "quantity": _to_float(item.quantity),
+                    }
+                    for item in items
+                ],
+            }
+        )
+
+    return results
 
 
 @app.post("/returns", response_model=schemas.ReturnCreated)
@@ -1549,3 +1701,386 @@ def get_returns_report(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.post("/shop-orders", response_model=schemas.ShopOrderOut)
+def create_shop_order(
+    order: schemas.ShopOrderCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    shop = (
+        db.query(models.Shop)
+        .filter(
+            models.Shop.id == order.shop_id,
+            models.Shop.manager_id == current_user.id,
+        )
+        .first()
+    )
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден или не принадлежит менеджеру")
+
+    if not order.items:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    aggregated: Dict[int, Dict[str, Any]] = {}
+    for item in order.items:
+        quantity_value = int(item.quantity)
+        if quantity_value <= 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+
+        price_value = float(item.price) if item.price is not None else None
+        entry = aggregated.setdefault(item.product_id, {"quantity": 0, "price": price_value})
+        entry["quantity"] += quantity_value
+        if price_value is not None:
+            entry["price"] = price_value
+
+    product_ids = list(aggregated.keys())
+    archived_column = getattr(models.Product, "is_archived", None)
+
+    products_query = db.query(models.Product).filter(
+        models.Product.id.in_(product_ids),
+        models.Product.manager_id == current_user.id,
+        models.Product.is_return.is_(False),
+    )
+    if archived_column is not None:
+        products_query = products_query.filter(archived_column.is_(False))
+
+    manager_products = products_query.with_for_update().all()
+    manager_map = {product.id: product for product in manager_products}
+
+    missing_ids = [str(pid) for pid in product_ids if pid not in manager_map]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Товары не найдены в остатках менеджера: {', '.join(missing_ids)}",
+        )
+
+    insufficient: List[Dict[str, Any]] = []
+    for product_id, data in aggregated.items():
+        available = manager_map[product_id].quantity or 0
+        requested = data["quantity"]
+        if requested > available:
+            insufficient.append(
+                {
+                    "product_id": product_id,
+                    "requested": requested,
+                    "available": available,
+                }
+            )
+
+    if insufficient:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "INSUFFICIENT_STOCK", "items": insufficient},
+        )
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        order_row = models.ShopOrder(
+            manager_id=current_user.id,
+            shop_id=shop.id,
+            created_at=now,
+        )
+        db.add(order_row)
+        db.flush()
+
+        for product_id, data in aggregated.items():
+            product = manager_map[product_id]
+            requested = data["quantity"]
+            price_value = data["price"] if data["price"] is not None else product.price
+
+            product.quantity = (product.quantity or 0) - requested
+
+            db.add(
+                models.ShopOrderItem(
+                    order_id=order_row.id,
+                    product_id=product_id,
+                    quantity=requested,
+                    price=price_value,
+                )
+            )
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    created_orders = _fetch_shop_orders(db, order_ids=[order_row.id])
+    if not created_orders:
+        raise HTTPException(status_code=500, detail="Не удалось получить созданный заказ")
+
+    return created_orders[0]
+
+
+@app.get("/shop-orders", response_model=List[schemas.ShopOrderOut])
+def list_shop_orders(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    return _fetch_shop_orders(db, manager_id=current_user.id)
+
+
+@app.post("/shop-returns", response_model=schemas.ShopReturnOut)
+def create_shop_return(
+    payload: schemas.ShopReturnCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    shop = (
+        db.query(models.Shop)
+        .filter(
+            models.Shop.id == payload.shop_id,
+            models.Shop.manager_id == current_user.id,
+        )
+        .first()
+    )
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден или не принадлежит менеджеру")
+
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    aggregated: Dict[int, int] = {}
+    for item in payload.items:
+        quantity_value = int(item.quantity)
+        if quantity_value <= 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+        aggregated[item.product_id] = aggregated.get(item.product_id, 0) + quantity_value
+
+    product_ids = list(aggregated.keys())
+    archived_column = getattr(models.Product, "is_archived", None)
+
+    products_query = db.query(models.Product).filter(
+        models.Product.id.in_(product_ids),
+        models.Product.manager_id == current_user.id,
+        models.Product.is_return.is_(False),
+    )
+    if archived_column is not None:
+        products_query = products_query.filter(archived_column.is_(False))
+
+    manager_products = products_query.with_for_update().all()
+    manager_map = {product.id: product for product in manager_products}
+
+    missing_ids = [str(pid) for pid in product_ids if pid not in manager_map]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Товары не найдены в остатках менеджера: {', '.join(missing_ids)}",
+        )
+
+    return_products: Dict[str, models.Product] = {}
+
+    try:
+        return_row = models.ShopReturn(
+            manager_id=current_user.id,
+            shop_id=shop.id,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(return_row)
+        db.flush()
+
+        for product_id, quantity in aggregated.items():
+            manager_product = manager_map[product_id]
+            product_name = manager_product.name
+
+            return_product = return_products.get(product_name)
+            if not return_product:
+                return_query = db.query(models.Product).filter(
+                    models.Product.manager_id.is_(None),
+                    models.Product.is_return.is_(True),
+                    models.Product.name == product_name,
+                )
+                if archived_column is not None:
+                    return_query = return_query.filter(archived_column.is_(False))
+
+                return_product = return_query.with_for_update().first()
+                if not return_product:
+                    return_product = models.Product(
+                        name=product_name,
+                        quantity=0,
+                        price=manager_product.price,
+                        manager_id=None,
+                        is_return=True,
+                    )
+                    db.add(return_product)
+                    db.flush()
+
+                return_products[product_name] = return_product
+
+            return_product.quantity = (return_product.quantity or 0) + quantity
+
+            db.add(
+                models.ShopReturnItem(
+                    return_id=return_row.id,
+                    product_id=return_product.id,
+                    quantity=quantity,
+                )
+            )
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    created_returns = _fetch_shop_returns(db, return_ids=[return_row.id])
+    if not created_returns:
+        raise HTTPException(status_code=500, detail="Не удалось получить созданный возврат")
+
+    return created_returns[0]
+
+
+@app.get("/shop-returns", response_model=List[schemas.ShopReturnOut])
+def list_shop_returns(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    return _fetch_shop_returns(db, manager_id=current_user.id)
+
+
+@app.post("/manager-returns", response_model=schemas.ManagerReturnOut)
+def create_manager_return(
+    payload: schemas.ManagerReturnCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    aggregated: Dict[int, int] = {}
+    for item in payload.items:
+        quantity_value = int(item.quantity)
+        if quantity_value <= 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+        aggregated[item.product_id] = aggregated.get(item.product_id, 0) + quantity_value
+
+    product_ids = list(aggregated.keys())
+    archived_column = getattr(models.Product, "is_archived", None)
+
+    products_query = db.query(models.Product).filter(
+        models.Product.id.in_(product_ids),
+        models.Product.manager_id == current_user.id,
+        models.Product.is_return.is_(False),
+    )
+    if archived_column is not None:
+        products_query = products_query.filter(archived_column.is_(False))
+
+    manager_products = products_query.with_for_update().all()
+    manager_map = {product.id: product for product in manager_products}
+
+    missing_ids = [str(pid) for pid in product_ids if pid not in manager_map]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Товары не найдены в остатках менеджера: {', '.join(missing_ids)}",
+        )
+
+    insufficient: List[Dict[str, Any]] = []
+    for product_id, quantity in aggregated.items():
+        available = manager_map[product_id].quantity or 0
+        if quantity > available:
+            insufficient.append(
+                {
+                    "product_id": product_id,
+                    "requested": quantity,
+                    "available": available,
+                }
+            )
+
+    if insufficient:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "INSUFFICIENT_STOCK", "items": insufficient},
+        )
+
+    product_names = {manager_map[pid].name for pid in product_ids}
+    base_query = db.query(models.Product).filter(
+        models.Product.manager_id.is_(None),
+        models.Product.is_return.is_(False),
+        models.Product.name.in_(product_names),
+    )
+    if archived_column is not None:
+        base_query = base_query.filter(archived_column.is_(False))
+
+    base_products = base_query.with_for_update().all()
+    base_map = {product.name: product for product in base_products}
+
+    missing_base = [name for name in product_names if name not in base_map]
+    if missing_base:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Не найден основной склад для товаров: {', '.join(missing_base)}",
+        )
+
+    try:
+        return_row = models.ManagerReturn(
+            manager_id=current_user.id,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(return_row)
+        db.flush()
+
+        for product_id, quantity in aggregated.items():
+            manager_product = manager_map[product_id]
+            base_product = base_map[manager_product.name]
+
+            manager_product.quantity = (manager_product.quantity or 0) - quantity
+            base_product.quantity = (base_product.quantity or 0) + quantity
+
+            db.add(
+                models.ManagerReturnItem(
+                    return_id=return_row.id,
+                    product_id=base_product.id,
+                    quantity=quantity,
+                )
+            )
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    created_returns = _fetch_manager_returns(db, return_ids=[return_row.id])
+    if not created_returns:
+        raise HTTPException(status_code=500, detail="Не удалось получить созданный возврат")
+
+    return created_returns[0]
+
+
+@app.get("/manager-returns", response_model=List[schemas.ManagerReturnOut])
+def list_manager_returns(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("manager", "admin"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    manager_id: Optional[int] = None
+    if current_user.role == "manager":
+        manager_id = current_user.id
+
+    return _fetch_manager_returns(db, manager_id=manager_id)
+
