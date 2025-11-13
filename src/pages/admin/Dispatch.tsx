@@ -243,7 +243,24 @@ export default function AdminDispatch() {
       resetSelection();
     },
     onError: (mutationError: unknown) => {
-      const message = mutationError instanceof Error ? mutationError.message : "Не удалось создать отправку";
+      const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
+      if (error?.status === 409 && error.data?.error === "INSUFFICIENT_STOCK") {
+        const shortages: Array<{ product_id: number; requested: number; available: number }> =
+          Array.isArray(error.data.items) ? error.data.items : [];
+        const lines = shortages.map((shortage) => {
+          const existing = items.find((item) => item.product_id === shortage.product_id);
+          const name = existing?.product_name ? existing.product_name : `Товар ${shortage.product_id}`;
+          return `${name}: нужно ${shortage.requested}, доступно ${shortage.available}`;
+        });
+        toast({
+          title: "Недостаточно товара на складе",
+          description: lines.length > 0 ? lines.join("\n") : error.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const message = error?.message || "Не удалось создать отправку";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
@@ -469,11 +486,8 @@ export default function AdminDispatch() {
                                 {productOptions.map((option) => (
                                   <CommandItem key={option.id} value={`${option.id}`} onSelect={() => handleSelectProduct(option)}>
                                     <div className="flex w-full items-center justify-between gap-3">
-                                      <span className="truncate">{option.name}</span>
-                                      <div className="flex flex-col text-xs text-muted-foreground">
-                                        <span>Остаток: {option.quantity}</span>
-                                        <span>Цена: {option.price}</span>
-                                      </div>
+                                      <span className="truncate">{`${option.name} – остаток: ${option.quantity}`}</span>
+                                      <span className="text-xs text-muted-foreground">Цена: {option.price}</span>
                                     </div>
                                     {selectedProduct?.id === option.id && (
                                       <Check className="ml-2 h-4 w-4 text-primary" />
