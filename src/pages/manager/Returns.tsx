@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -28,34 +27,6 @@ interface ManagerStockItem {
   price?: number | null;
 }
 
-interface ManagerReturnItem {
-  product_id: number;
-  product_name: string;
-  quantity: number;
-}
-
-interface ManagerReturn {
-  id: number;
-  manager_id: number;
-  created_at: string;
-  items: ManagerReturnItem[];
-}
-
-interface ShopReturnItem {
-  product_id: number;
-  product_name: string;
-  quantity: number;
-}
-
-interface ShopReturn {
-  id: number;
-  manager_id: number;
-  shop_id: number;
-  shop_name: string;
-  created_at: string;
-  items: ShopReturnItem[];
-}
-
 interface ShopInfo {
   id: number;
   name: string;
@@ -68,15 +39,9 @@ interface ShopReturnFormItem {
   quantity: string;
 }
 
-const fmt = (iso?: string | null) =>
-  iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—";
-
 export default function ManagerReturns() {
   const { toast } = useToast();
 
-  const [quantities, setQuantities] = useState<Record<number, string>>({});
-  const [managerReturnDetail, setManagerReturnDetail] = useState<ManagerReturn | null>(null);
-  const [shopReturnDetail, setShopReturnDetail] = useState<ShopReturn | null>(null);
   const [shopId, setShopId] = useState("");
   const [shopReturnItems, setShopReturnItems] = useState<ShopReturnFormItem[]>([]);
   const [shopProductSearch, setShopProductSearch] = useState("");
@@ -92,26 +57,6 @@ export default function ManagerReturns() {
   } = useQuery<ManagerStockItem[]>({
     queryKey: ["manager", "stock"],
     queryFn: () => api.getManagerStock() as Promise<ManagerStockItem[]>,
-  });
-
-  const {
-    data: managerReturns = [],
-    isFetching: managerReturnsLoading,
-    error: managerReturnsError,
-    refetch: refetchManagerReturns,
-  } = useQuery<ManagerReturn[]>({
-    queryKey: ["manager", "returns", "warehouse"],
-    queryFn: () => api.getManagerReturns() as Promise<ManagerReturn[]>,
-  });
-
-  const {
-    data: shopReturns = [],
-    isFetching: shopReturnsLoading,
-    error: shopReturnsError,
-    refetch: refetchShopReturns,
-  } = useQuery<ShopReturn[]>({
-    queryKey: ["manager", "shop-returns"],
-    queryFn: () => api.getShopReturns() as Promise<ShopReturn[]>,
   });
 
   const {
@@ -131,140 +76,36 @@ export default function ManagerReturns() {
   }, [stockError, toast]);
 
   useEffect(() => {
-    if (managerReturnsError) {
-      const message =
-        managerReturnsError instanceof Error ? managerReturnsError.message : "Не удалось загрузить возвраты";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    }
-  }, [managerReturnsError, toast]);
-
-  useEffect(() => {
-    if (shopReturnsError) {
-      const message = shopReturnsError instanceof Error ? shopReturnsError.message : "Не удалось загрузить возвраты";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    }
-  }, [shopReturnsError, toast]);
-
-  useEffect(() => {
     if (shopsError) {
       const message = shopsError instanceof Error ? shopsError.message : "Не удалось загрузить магазины";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     }
   }, [shopsError, toast]);
 
-  const stockMap = useMemo(() => {
-    const map = new Map<number, ManagerStockItem>();
-    for (const item of stock) {
-      map.set(item.product_id, item);
-    }
-    return map;
-  }, [stock]);
-
   const shopProductOptions = useMemo(() => {
     const term = shopProductSearch.trim().toLowerCase();
-    const items = stock;
-    if (!term) return items;
-    return items.filter((product) => product.name.toLowerCase().includes(term));
+    if (!term) return stock;
+    return stock.filter((product) => product.name.toLowerCase().includes(term));
   }, [stock, shopProductSearch]);
 
-  const managerSelectedItems = useMemo(() => {
-    return stock
-      .map((item) => ({
-        product_id: item.product_id,
-        name: item.name,
-        available: item.quantity,
-        requested: Number(quantities[item.product_id] ?? 0),
-      }))
-      .filter((item) => !Number.isNaN(item.requested) && item.requested > 0);
-  }, [stock, quantities]);
-
-  const managerReturnMutation = useMutation({
-    mutationFn: (payload: { items: { product_id: number; quantity: number }[] }) => api.createManagerReturn(payload),
-    onSuccess: () => {
-      toast({ title: "Возврат отправлен на склад" });
-      setQuantities({});
-      refetchStock();
-      refetchManagerReturns();
-    },
-    onError: (mutationError: unknown) => {
-      const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
-      if (error?.status === 409 && error.data?.error === "INSUFFICIENT_STOCK") {
-        const shortages: Array<{ product_id: number; requested: number; available: number }> =
-          Array.isArray(error.data.items) ? error.data.items : [];
-        const lines = shortages.map((shortage) => {
-          const stockItem = stockMap.get(shortage.product_id);
-          const name = stockItem?.name ?? `Товар ${shortage.product_id}`;
-          return `${name}: нужно ${shortage.requested}, доступно ${shortage.available}`;
-        });
-        toast({
-          title: "Недостаточно товара",
-          description: lines.length > 0 ? lines.join("\n") : error.message,
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const message = error?.message || "Не удалось оформить возврат";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    },
-  });
+  const totalShopItems = shopReturnItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
 
   const shopReturnMutation = useMutation({
     mutationFn: (payload: { shop_id: number; items: { product_id: number; quantity: number }[] }) =>
       api.createShopReturn(payload),
     onSuccess: () => {
-      toast({ title: "Возврат магазина зарегистрирован" });
+      toast({ title: "Возврат сохранён" });
       setShopId("");
       setShopReturnItems([]);
       setShopQuantityInput("");
       setSelectedShopProduct(null);
       setShopProductSearch("");
-      refetchShopReturns();
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "Не удалось зарегистрировать возврат";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
-
-  const handleQuantityChange = (productId: number, value: string) => {
-    setQuantities((prev) => ({ ...prev, [productId]: value }));
-  };
-
-  const handleReturnAll = () => {
-    const next: Record<number, string> = {};
-    for (const item of stock) {
-      if (item.quantity > 0) {
-        next[item.product_id] = String(item.quantity);
-      }
-    }
-    setQuantities(next);
-  };
-
-  const handleManagerReturnSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (managerReturnMutation.isPending) return;
-
-    if (managerSelectedItems.length === 0) {
-      toast({ title: "Ошибка", description: "Укажите количество хотя бы для одного товара", variant: "destructive" });
-      return;
-    }
-
-    for (const item of managerSelectedItems) {
-      if (item.requested > item.available) {
-        toast({
-          title: "Ошибка",
-          description: `${item.name}: в наличии ${item.available}, пытаетесь вернуть ${item.requested}`,
-          variant: "destructive",
-        });
-        return;
-      }
-    }
-
-    managerReturnMutation.mutate({
-      items: managerSelectedItems.map((item) => ({ product_id: item.product_id, quantity: item.requested })),
-    });
-  };
 
   const handleSelectShopProduct = (product: ManagerStockItem) => {
     setSelectedShopProduct(product);
@@ -312,16 +153,14 @@ export default function ManagerReturns() {
   };
 
   const handleShopItemQuantityChange = (productId: number, value: string) => {
-    setShopReturnItems((current) =>
-      current.map((item) => (item.product_id === productId ? { ...item, quantity: value } : item))
-    );
+    setShopReturnItems((current) => current.map((item) => (item.product_id === productId ? { ...item, quantity: value } : item)));
   };
 
   const handleShopItemRemove = (productId: number) => {
     setShopReturnItems((current) => current.filter((item) => item.product_id !== productId));
   };
 
-  const handleShopReturnSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleShopReturnSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (shopReturnMutation.isPending) return;
 
@@ -352,130 +191,21 @@ export default function ManagerReturns() {
     });
   };
 
-  const totalManagerRequested = managerSelectedItems.reduce((sum, item) => sum + item.requested, 0);
-  const totalShopItems = shopReturnItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const isAddDisabled =
+    !selectedShopProduct ||
+    !shopQuantityInput.trim() ||
+    Number.isNaN(Number(shopQuantityInput)) ||
+    Number(shopQuantityInput) <= 0;
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Возвраты</h1>
+      <h1 className="text-3xl font-bold">Возврат из магазинов</h1>
 
       <Card>
         <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <CardTitle>Возврат в главный склад</CardTitle>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={handleReturnAll} disabled={stock.length === 0}>
-              Вернуть всё
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => refetchStock()} disabled={stockLoading}>
-              {stockLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Обновить"}
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleManagerReturnSubmit} className="space-y-6">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Товар</TableHead>
-                  <TableHead className="w-24">Доступно</TableHead>
-                  <TableHead className="w-32">К возврату</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {stockLoading ? (
-                  <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      Загрузка...
-                    </TableCell>
-                  </TableRow>
-                ) : stock.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      Нет товаров для возврата
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  stock.map((item) => (
-                    <TableRow key={item.product_id}>
-                      <TableCell>{item.name}</TableCell>
-                      <TableCell>{item.quantity}</TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min={0}
-                          max={item.quantity}
-                          value={quantities[item.product_id] ?? ""}
-                          onChange={(event) => handleQuantityChange(item.product_id, event.target.value)}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-muted-foreground">Всего к возврату: {totalManagerRequested}</p>
-              <Button type="submit" className="w-full sm:w-56" disabled={managerReturnMutation.isPending}>
-                {managerReturnMutation.isPending ? "Отправка..." : "Отправить возврат"}
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <CardTitle>История возвратов в главный склад</CardTitle>
-          <Button variant="outline" size="sm" onClick={() => refetchManagerReturns()} disabled={managerReturnsLoading}>
-            Обновить
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">№</TableHead>
-                <TableHead>Дата</TableHead>
-                <TableHead className="w-24 text-right">Подробнее</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {managerReturnsLoading ? (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    Загрузка...
-                  </TableCell>
-                </TableRow>
-              ) : managerReturns.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    Возвратов пока нет
-                  </TableCell>
-                </TableRow>
-              ) : (
-                managerReturns.map((returnDoc) => (
-                  <TableRow key={returnDoc.id}>
-                    <TableCell>{returnDoc.id}</TableCell>
-                    <TableCell>{fmt(returnDoc.created_at)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => setManagerReturnDetail(returnDoc)}>
-                        Подробнее
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <CardTitle>Возврат из магазинов</CardTitle>
-          <Button variant="outline" size="sm" onClick={() => refetchShopReturns()} disabled={shopReturnsLoading}>
-            Обновить историю
+          <CardTitle>Зафиксировать возврат</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => refetchStock()} disabled={stockLoading}>
+            {stockLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Обновить остатки"}
           </Button>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -546,7 +276,7 @@ export default function ManagerReturns() {
                     placeholder="Кол-во"
                     className="w-24"
                   />
-                  <Button type="button" onClick={addShopReturnItem} disabled={!selectedShopProduct || !shopQuantityInput}>
+                  <Button type="button" onClick={addShopReturnItem} disabled={isAddDisabled}>
                     Добавить
                   </Button>
                 </div>
@@ -598,112 +328,8 @@ export default function ManagerReturns() {
               </Button>
             </div>
           </form>
-
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">№</TableHead>
-                <TableHead>Магазин</TableHead>
-                <TableHead>Дата</TableHead>
-                <TableHead className="w-24 text-right">Подробнее</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {shopReturnsLoading ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground">
-                    Загрузка...
-                  </TableCell>
-                </TableRow>
-              ) : shopReturns.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground">
-                    Возвратов пока нет
-                  </TableCell>
-                </TableRow>
-              ) : (
-                shopReturns.map((returnDoc) => (
-                  <TableRow key={returnDoc.id}>
-                    <TableCell>{returnDoc.id}</TableCell>
-                    <TableCell>{returnDoc.shop_name}</TableCell>
-                    <TableCell>{fmt(returnDoc.created_at)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => setShopReturnDetail(returnDoc)}>
-                        Подробнее
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
         </CardContent>
       </Card>
-
-      <Dialog open={managerReturnDetail !== null} onOpenChange={(open) => !open && setManagerReturnDetail(null)}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Детали возврата в склад</DialogTitle>
-          </DialogHeader>
-          {!managerReturnDetail ? (
-            <p className="text-sm text-muted-foreground">Загрузка...</p>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">Дата: {fmt(managerReturnDetail.created_at)}</p>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Товар</TableHead>
-                    <TableHead className="w-32">Количество</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {managerReturnDetail.items.map((item) => (
-                    <TableRow key={item.product_id}>
-                      <TableCell>{item.product_name}</TableCell>
-                      <TableCell>{item.quantity}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={shopReturnDetail !== null} onOpenChange={(open) => !open && setShopReturnDetail(null)}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Детали возврата магазина</DialogTitle>
-          </DialogHeader>
-          {!shopReturnDetail ? (
-            <p className="text-sm text-muted-foreground">Загрузка...</p>
-          ) : (
-            <div className="space-y-4">
-              <div className="text-sm text-muted-foreground space-y-1">
-                <p>Магазин: {shopReturnDetail.shop_name}</p>
-                <p>Дата: {fmt(shopReturnDetail.created_at)}</p>
-              </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Товар</TableHead>
-                    <TableHead className="w-32">Количество</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {shopReturnDetail.items.map((item) => (
-                    <TableRow key={item.product_id}>
-                      <TableCell>{item.product_name}</TableCell>
-                      <TableCell>{item.quantity}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

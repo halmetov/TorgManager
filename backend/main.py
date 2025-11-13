@@ -1830,7 +1830,7 @@ def list_shop_orders(
     return _fetch_shop_orders(db, manager_id=current_user.id)
 
 
-@app.post("/shop-returns", response_model=schemas.ShopReturnOut)
+@app.post("/shop-returns", response_model=schemas.ShopReturnCreated)
 def create_shop_return(
     payload: schemas.ShopReturnCreate,
     current_user: models.User = Depends(get_current_user),
@@ -1871,7 +1871,7 @@ def create_shop_return(
     if archived_column is not None:
         products_query = products_query.filter(archived_column.is_(False))
 
-    manager_products = products_query.with_for_update().all()
+    manager_products = products_query.all()
     manager_map = {product.id: product for product in manager_products}
 
     missing_ids = [str(pid) for pid in product_ids if pid not in manager_map]
@@ -1880,8 +1880,6 @@ def create_shop_return(
             status_code=404,
             detail=f"Товары не найдены в остатках менеджера: {', '.join(missing_ids)}",
         )
-
-    return_products: Dict[str, models.Product] = {}
 
     try:
         return_row = models.ShopReturn(
@@ -1893,39 +1891,10 @@ def create_shop_return(
         db.flush()
 
         for product_id, quantity in aggregated.items():
-            manager_product = manager_map[product_id]
-            product_name = manager_product.name
-
-            return_product = return_products.get(product_name)
-            if not return_product:
-                return_query = db.query(models.Product).filter(
-                    models.Product.manager_id.is_(None),
-                    models.Product.is_return.is_(True),
-                    models.Product.name == product_name,
-                )
-                if archived_column is not None:
-                    return_query = return_query.filter(archived_column.is_(False))
-
-                return_product = return_query.with_for_update().first()
-                if not return_product:
-                    return_product = models.Product(
-                        name=product_name,
-                        quantity=0,
-                        price=manager_product.price,
-                        manager_id=None,
-                        is_return=True,
-                    )
-                    db.add(return_product)
-                    db.flush()
-
-                return_products[product_name] = return_product
-
-            return_product.quantity = (return_product.quantity or 0) + quantity
-
             db.add(
                 models.ShopReturnItem(
                     return_id=return_row.id,
-                    product_id=return_product.id,
+                    product_id=product_id,
                     quantity=quantity,
                 )
             )
@@ -1938,11 +1907,7 @@ def create_shop_return(
         db.rollback()
         raise
 
-    created_returns = _fetch_shop_returns(db, return_ids=[return_row.id])
-    if not created_returns:
-        raise HTTPException(status_code=500, detail="Не удалось получить созданный возврат")
-
-    return created_returns[0]
+    return schemas.ShopReturnCreated(id=return_row.id, created_at=return_row.created_at)
 
 
 @app.get("/shop-returns", response_model=List[schemas.ShopReturnOut])
@@ -1956,7 +1921,7 @@ def list_shop_returns(
     return _fetch_shop_returns(db, manager_id=current_user.id)
 
 
-@app.post("/manager-returns", response_model=schemas.ManagerReturnOut)
+@app.post("/manager-returns", response_model=schemas.ManagerReturnCreated)
 def create_manager_return(
     payload: schemas.ManagerReturnCreate,
     current_user: models.User = Depends(get_current_user),
@@ -2033,10 +1998,12 @@ def create_manager_return(
             detail=f"Не найден основной склад для товаров: {', '.join(missing_base)}",
         )
 
+    now = datetime.now(timezone.utc)
+
     try:
         return_row = models.ManagerReturn(
             manager_id=current_user.id,
-            created_at=datetime.now(timezone.utc),
+            created_at=now,
         )
         db.add(return_row)
         db.flush()
@@ -2064,11 +2031,7 @@ def create_manager_return(
         db.rollback()
         raise
 
-    created_returns = _fetch_manager_returns(db, return_ids=[return_row.id])
-    if not created_returns:
-        raise HTTPException(status_code=500, detail="Не удалось получить созданный возврат")
-
-    return created_returns[0]
+    return schemas.ManagerReturnCreated(id=return_row.id, created_at=return_row.created_at)
 
 
 @app.get("/manager-returns", response_model=List[schemas.ManagerReturnOut])
