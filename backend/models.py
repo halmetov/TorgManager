@@ -72,14 +72,37 @@ class Order(Base):
 
 class Return(Base):
     __tablename__ = "returns"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     shop_id = Column(Integer, ForeignKey("shops.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
+
     manager = relationship("User")
     shop = relationship("Shop")
+    product = relationship("Product")
+
+
+class Incoming(Base):
+    __tablename__ = "incoming"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    items = relationship("IncomingItem", back_populates="incoming")
+    created_by_admin = relationship("User")
+
+
+class IncomingItem(Base):
+    __tablename__ = "incoming_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    incoming_id = Column(Integer, ForeignKey("incoming.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+
+    incoming = relationship("Incoming", back_populates="items")
     product = relationship("Product")
