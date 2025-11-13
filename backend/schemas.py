@@ -245,6 +245,11 @@ class ShopReturnOut(BaseModel):
     items: List[ShopReturnItemOut]
 
 
+class ShopReturnCreated(BaseModel):
+    id: int
+    created_at: datetime
+
+
 class ManagerReturnItemCreate(BaseModel):
     product_id: int
     quantity: condecimal(gt=0)
@@ -252,6 +257,11 @@ class ManagerReturnItemCreate(BaseModel):
 
 class ManagerReturnCreate(BaseModel):
     items: List[ManagerReturnItemCreate]
+
+
+class ManagerReturnCreated(BaseModel):
+    id: int
+    created_at: datetime
 
 
 class ManagerReturnItemOut(BaseModel):

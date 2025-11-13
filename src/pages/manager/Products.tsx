@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -41,6 +41,7 @@ export default function ManagerProducts() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
+  const [returnQuantities, setReturnQuantities] = useState<Record<number, string>>({});
 
   const {
     data: products = [],
@@ -60,6 +61,132 @@ export default function ManagerProducts() {
 
   const productsList = Array.isArray(products) ? (products as Product[]) : [];
   const hasProducts = productsList.length > 0;
+  const productMap = useMemo(() => {
+    const map = new Map<number, Product>();
+    for (const product of productsList) {
+      map.set(product.id, product);
+    }
+    return map;
+  }, [productsList]);
+
+  const managerSelectedItems = useMemo(() => {
+    return productsList
+      .map((product) => {
+        const rawValue = returnQuantities[product.id] ?? "";
+        const quantityNumber = Number(rawValue);
+        return {
+          productId: product.id,
+          name: product.name,
+          available: product.quantity,
+          rawValue,
+          requested: Number.isNaN(quantityNumber) ? 0 : quantityNumber,
+        };
+      })
+      .filter((item) => item.requested > 0);
+  }, [productsList, returnQuantities]);
+
+  const totalReturnRequested = useMemo(
+    () => managerSelectedItems.reduce((sum, item) => sum + item.requested, 0),
+    [managerSelectedItems]
+  );
+  const hasReturnableProducts = useMemo(
+    () => productsList.some((product) => product.quantity > 0),
+    [productsList]
+  );
+
+  const managerReturnMutation = useMutation({
+    mutationFn: (payload: { items: { product_id: number; quantity: number }[] }) =>
+      api.createManagerReturn(payload),
+    onSuccess: () => {
+      toast({ title: "Возврат отправлен на склад" });
+      setReturnQuantities({});
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: (mutationError: unknown) => {
+      const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
+      if (error?.status === 409 && error.data?.error === "INSUFFICIENT_STOCK") {
+        const shortages: Array<{ product_id: number; requested: number; available: number }> =
+          Array.isArray(error.data.items) ? error.data.items : [];
+        const lines = shortages.map((shortage) => {
+          const product = productMap.get(shortage.product_id);
+          const name = product?.name ?? `Товар ${shortage.product_id}`;
+          return `${name}: нужно ${shortage.requested}, доступно ${shortage.available}`;
+        });
+        toast({
+          title: "Недостаточно товара",
+          description: lines.length > 0 ? lines.join("\n") : error.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const message = error?.message || "Не удалось оформить возврат";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    },
+  });
+
+  const handleReturnQuantityChange = (productId: number, value: string) => {
+    if (value === "") {
+      setReturnQuantities((prev) => {
+        const next = { ...prev };
+        delete next[productId];
+        return next;
+      });
+      return;
+    }
+
+    setReturnQuantities((prev) => ({ ...prev, [productId]: value }));
+  };
+
+  const handleReturnAll = () => {
+    const next: Record<number, string> = {};
+    for (const product of productsList) {
+      if (product.quantity > 0) {
+        next[product.id] = String(product.quantity);
+      }
+    }
+    setReturnQuantities(next);
+  };
+
+  const handleReturnSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (managerReturnMutation.isPending) return;
+
+    if (managerSelectedItems.length === 0) {
+      toast({
+        title: "Ошибка",
+        description: "Укажите количество хотя бы для одного товара",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    for (const item of managerSelectedItems) {
+      const rawValue = item.rawValue.trim();
+      const quantityNumber = Number(item.rawValue);
+      if (rawValue === "" || Number.isNaN(quantityNumber) || quantityNumber <= 0) {
+        toast({
+          title: "Ошибка",
+          description: `${item.name}: количество должно быть больше нуля`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (quantityNumber > item.available) {
+        toast({
+          title: "Ошибка",
+          description: `${item.name}: в наличии ${item.available}, пытаетесь вернуть ${quantityNumber}`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    managerReturnMutation.mutate({
+      items: managerSelectedItems.map((item) => ({ product_id: item.productId, quantity: item.requested })),
+    });
+  };
 
   const fetchDispatches = async (): Promise<DispatchRecord[]> => {
     const client = api as unknown as { get: <T>(endpoint: string) => Promise<T> };
@@ -165,6 +292,71 @@ export default function ManagerProducts() {
               )}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <CardTitle>Возврат в главный склад</CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleReturnAll}
+            disabled={!hasReturnableProducts || managerReturnMutation.isPending}
+          >
+            Вернуть всё
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleReturnSubmit} className="space-y-6">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Товар</TableHead>
+                  <TableHead className="w-24">Доступно</TableHead>
+                  <TableHead className="w-32">К возврату</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      Загрузка...
+                    </TableCell>
+                  </TableRow>
+                ) : productsList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      Нет товаров для возврата
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  productsList.map((product) => (
+                    <TableRow key={product.id}>
+                      <TableCell>{product.name}</TableCell>
+                      <TableCell>{product.quantity}</TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={product.quantity}
+                          value={returnQuantities[product.id] ?? ""}
+                          onChange={(event) => handleReturnQuantityChange(product.id, event.target.value)}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-muted-foreground">Всего к возврату: {totalReturnRequested}</p>
+              <Button type="submit" className="w-full sm:w-56" disabled={managerReturnMutation.isPending}>
+                {managerReturnMutation.isPending ? "Отправка..." : "Отправить возврат"}
+              </Button>
+            </div>
+          </form>
         </CardContent>
       </Card>
 
