@@ -1,4 +1,4 @@
-from pydantic import BaseModel, conint
+from pydantic import BaseModel, condecimal
 from typing import Optional, List
 from datetime import datetime, timezone
 
@@ -161,11 +161,13 @@ class ReturnDetail(BaseModel):
 
 class IncomingItemCreate(BaseModel):
     product_id: int
-    quantity: conint(gt=0)
+    quantity: condecimal(gt=0)
 
 
 class IncomingCreate(BaseModel):
-    items: List[IncomingItemCreate]
+    product_id: Optional[int] = None
+    quantity: Optional[condecimal(gt=0)] = None
+    items: Optional[List[IncomingItemCreate]] = None
 
 
 class IncomingCreated(BaseModel):

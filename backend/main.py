@@ -1173,14 +1173,26 @@ def create_incoming(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Only admin can create incoming")
 
-    if not incoming.items:
+    items: List[schemas.IncomingItemCreate] = []
+
+    if incoming.items:
+        items = incoming.items
+    elif incoming.product_id is not None and incoming.quantity is not None:
+        items = [
+            schemas.IncomingItemCreate(
+                product_id=incoming.product_id,
+                quantity=incoming.quantity,
+            )
+        ]
+
+    if not items:
         raise HTTPException(status_code=400, detail="Необходимо указать товары")
 
     aggregated: Dict[int, int] = {}
-    for item in incoming.items:
+    for item in items:
         if item.quantity <= 0:
             raise HTTPException(status_code=400, detail="Количество должно быть больше 0")
-        aggregated[item.product_id] = aggregated.get(item.product_id, 0) + item.quantity
+        aggregated[item.product_id] = aggregated.get(item.product_id, 0) + int(item.quantity)
 
     product_ids = list(aggregated.keys())
     if not product_ids:
