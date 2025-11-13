@@ -175,10 +175,6 @@ class ApiClient {
     return this.post('/incoming', data);
   }
 
-  async getManagerStock() {
-    return this.get('/manager/stock');
-  }
-
   async createProduct(data: any) {
     return this.post('/products', data);
   }
@@ -250,8 +246,17 @@ class ApiClient {
   }
 
   // Orders
-  async createOrder(data: any) {
-    return this.post('/orders', data);
+  async createShopOrder(data: any) {
+    return this.post('/shop-orders', data);
+  }
+
+  async getShopOrders() {
+    return this.get('/shop-orders');
+  }
+
+  // Manager stock
+  async getManagerStock() {
+    return this.get('/manager/stock');
   }
 
   // Returns
@@ -267,11 +272,23 @@ class ApiClient {
     return this.get(`/returns/${id}`);
   }
 
-  // Manager Products
-  async getManagerProducts() {
-    return this.get('/products');
+  async createShopReturn(data: { shop_id: number; items: { product_id: number; quantity: number }[] }) {
+    return this.post('/shop-returns', data);
   }
 
+  async getShopReturns() {
+    return this.get('/shop-returns');
+  }
+
+  async createManagerReturn(data: { items: { product_id: number; quantity: number }[] }) {
+    return this.post('/manager-returns', data);
+  }
+
+  async getManagerReturns() {
+    return this.get('/manager-returns');
+  }
+
+  // Manager Products
   // Reports
   async getProductReport() {
     return this.get('/reports/products');

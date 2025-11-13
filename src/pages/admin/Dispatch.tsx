@@ -358,13 +358,28 @@ export default function AdminDispatch() {
       return;
     }
 
+    const aggregated = new Map<number, { product_id: number; quantity: number; price: number }>();
+
+    for (const item of items) {
+      const productId = item.product_id;
+      const quantityValue = Number(item.quantity);
+      const priceValue = Number(item.price);
+      const existing = aggregated.get(productId);
+      if (existing) {
+        existing.quantity += quantityValue;
+        existing.price = priceValue;
+      } else {
+        aggregated.set(productId, {
+          product_id: productId,
+          quantity: quantityValue,
+          price: priceValue,
+        });
+      }
+    }
+
     dispatchMutation.mutate({
       manager_id: Number(managerId),
-      items: items.map((item) => ({
-        product_id: item.product_id,
-        quantity: Number(item.quantity),
-        price: Number(item.price),
-      })),
+      items: Array.from(aggregated.values()),
     });
   };
 

@@ -122,6 +122,7 @@ class ManagerStockItem(BaseModel):
     product_id: int
     name: str
     quantity: int
+    price: Optional[float] = None
 
 
 class ReturnItemCreate(BaseModel):
@@ -190,3 +191,77 @@ class IncomingDetail(BaseModel):
     id: int
     created_at: datetime
     items: List[IncomingDetailItem]
+
+
+class ShopOrderItemCreate(BaseModel):
+    product_id: int
+    quantity: condecimal(gt=0)
+    price: Optional[condecimal(ge=0)] = None
+
+
+class ShopOrderCreate(BaseModel):
+    shop_id: int
+    items: List[ShopOrderItemCreate]
+
+
+class ShopOrderItemOut(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: float
+    price: Optional[float] = None
+
+
+class ShopOrderOut(BaseModel):
+    id: int
+    manager_id: int
+    shop_id: int
+    shop_name: str
+    created_at: datetime
+    items: List[ShopOrderItemOut]
+
+
+class ShopReturnItemCreate(BaseModel):
+    product_id: int
+    quantity: condecimal(gt=0)
+
+
+class ShopReturnCreate(BaseModel):
+    shop_id: int
+    items: List[ShopReturnItemCreate]
+
+
+class ShopReturnItemOut(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: float
+
+
+class ShopReturnOut(BaseModel):
+    id: int
+    manager_id: int
+    shop_id: int
+    shop_name: str
+    created_at: datetime
+    items: List[ShopReturnItemOut]
+
+
+class ManagerReturnItemCreate(BaseModel):
+    product_id: int
+    quantity: condecimal(gt=0)
+
+
+class ManagerReturnCreate(BaseModel):
+    items: List[ManagerReturnItemCreate]
+
+
+class ManagerReturnItemOut(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: float
+
+
+class ManagerReturnOut(BaseModel):
+    id: int
+    manager_id: int
+    created_at: datetime
+    items: List[ManagerReturnItemOut]

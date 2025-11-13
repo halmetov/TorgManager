@@ -38,6 +38,7 @@ export default function Manager() {
       toast({ title: "Отправка принята" });
       refetchPending();
       queryClient.invalidateQueries({ queryKey: ["products"] });
+      queryClient.invalidateQueries({ queryKey: ["manager", "stock"] });
       queryClient.invalidateQueries({ queryKey: ["dispatches"] });
     },
     onError: (error: any) => {

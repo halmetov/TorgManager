@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Numeric
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime, timezone
@@ -106,4 +106,78 @@ class IncomingItem(Base):
     price_at_time = Column(Float, nullable=False)
 
     incoming = relationship("Incoming", back_populates="items")
+    product = relationship("Product")
+
+
+class ShopOrder(Base):
+    __tablename__ = "shop_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    items = relationship("ShopOrderItem", back_populates="order")
+    manager = relationship("User")
+    shop = relationship("Shop")
+
+
+class ShopOrderItem(Base):
+    __tablename__ = "shop_order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("shop_orders.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Numeric, nullable=False)
+    price = Column(Numeric, nullable=True)
+
+    order = relationship("ShopOrder", back_populates="items")
+    product = relationship("Product")
+
+
+class ShopReturn(Base):
+    __tablename__ = "shop_returns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    items = relationship("ShopReturnItem", back_populates="return_doc")
+    manager = relationship("User")
+    shop = relationship("Shop")
+
+
+class ShopReturnItem(Base):
+    __tablename__ = "shop_return_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    return_id = Column(Integer, ForeignKey("shop_returns.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Numeric, nullable=False)
+
+    return_doc = relationship("ShopReturn", back_populates="items")
+    product = relationship("Product")
+
+
+class ManagerReturn(Base):
+    __tablename__ = "manager_returns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    items = relationship("ManagerReturnItem", back_populates="return_doc")
+    manager = relationship("User")
+
+
+class ManagerReturnItem(Base):
+    __tablename__ = "manager_return_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    return_id = Column(Integer, ForeignKey("manager_returns.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Numeric, nullable=False)
+
+    return_doc = relationship("ManagerReturn", back_populates="items")
     product = relationship("Product")
