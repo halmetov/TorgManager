@@ -1699,9 +1699,6 @@ def get_returns_report(
     
     return result
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 @app.post("/shop-orders", response_model=schemas.ShopOrderOut)
 def create_shop_order(
     order: schemas.ShopOrderCreate,
@@ -2047,4 +2044,10 @@ def list_manager_returns(
         manager_id = current_user.id
 
     return _fetch_manager_returns(db, manager_id=manager_id)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
