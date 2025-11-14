@@ -1,222 +1,302 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Calendar } from "@/components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
-import { CalendarIcon } from "lucide-react";
 import { format } from "date-fns";
+import { CalendarIcon, Eye } from "lucide-react";
+
+import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Calendar } from "@/components/ui/calendar";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
+interface ManagerOption {
+  id: number;
+  full_name: string;
+  username: string;
+}
+
+interface ManagerDailySummary {
+  received_total: string | number;
+  delivered_total: string | number;
+  return_to_main_total: string | number;
+  return_from_shops_total: string | number;
+}
+
+interface MovementRow {
+  id: number;
+  time: string;
+  shop_name?: string | null;
+  type: "delivery" | "return_to_main" | "return_from_shop";
+}
+
+interface AdminDailyReport {
+  manager_id: number;
+  manager_name: string;
+  date: string;
+  summary: ManagerDailySummary;
+  deliveries: MovementRow[];
+  returns_to_main: MovementRow[];
+  returns_from_shops: MovementRow[];
+}
+
+type MovementType = "delivery" | "return_to_main" | "return_from_shop";
+
+const movementOptions: { value: MovementType; label: string }[] = [
+  { value: "delivery", label: "Выдачи" },
+  { value: "return_to_main", label: "Возврат в главный склад" },
+  { value: "return_from_shop", label: "Возврат из магазинов" },
+];
+
+const numberFormatter = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
 export default function AdminReports() {
-  const [selectedManager, setSelectedManager] = useState<string>("all");
-  const [startDate, setStartDate] = useState<Date>();
-  const [endDate, setEndDate] = useState<Date>();
+  const { toast } = useToast();
+  const [selectedManagerId, setSelectedManagerId] = useState<string>("");
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [movementType, setMovementType] = useState<MovementType>("delivery");
 
-  const { data: managers = [] } = useQuery({
-    queryKey: ["managers"],
-    queryFn: () => api.getManagers(),
+  const { data: managers = [], isLoading: managersLoading } = useQuery<ManagerOption[]>({
+    queryKey: ["admin", "managers"],
+    queryFn: () => api.getManagersList(),
   });
 
-  const queryParams = new URLSearchParams();
-  if (startDate) queryParams.append('start_date', startDate.toISOString());
-  if (endDate) queryParams.append('end_date', endDate.toISOString());
+  useEffect(() => {
+    if (!managers.length || selectedManagerId) {
+      return;
+    }
+    setSelectedManagerId(String(managers[0].id));
+  }, [managers, selectedManagerId]);
 
-  const { data: productReport } = useQuery({
-    queryKey: ["productReport", startDate, endDate],
-    queryFn: () => api.get(`/reports/products?${queryParams.toString()}`),
+  const formattedDate = useMemo(() => {
+    if (!selectedDate) return "";
+    return format(selectedDate, "yyyy-MM-dd");
+  }, [selectedDate]);
+
+  const managerIdNumber = selectedManagerId ? Number(selectedManagerId) : null;
+
+  const {
+    data: report,
+    isLoading: reportLoading,
+    isFetching: reportFetching,
+    error,
+  } = useQuery<AdminDailyReport | null>({
+    queryKey: ["admin", "daily-report", managerIdNumber, formattedDate],
+    queryFn: () => {
+      if (!managerIdNumber || !formattedDate) {
+        return Promise.resolve(null);
+      }
+      return api.getAdminDailyReport(managerIdNumber, formattedDate);
+    },
+    enabled: Boolean(managerIdNumber && formattedDate),
   });
 
-  const managerQueryParams = new URLSearchParams();
-  if (startDate) managerQueryParams.append('start_date', startDate.toISOString());
-  if (endDate) managerQueryParams.append('end_date', endDate.toISOString());
+  useEffect(() => {
+    if (!error) return;
+    const message = error instanceof Error ? error.message : "Не удалось загрузить отчет";
+    toast({ title: "Ошибка", description: message, variant: "destructive" });
+  }, [error, toast]);
 
-  const { data: managerReport } = useQuery({
-    queryKey: ["managerReport", selectedManager, startDate, endDate],
-    queryFn: () =>
-      selectedManager === "all"
-        ? api.get(`/reports/manager-summary?${managerQueryParams.toString()}`)
-        : api.get(`/reports/manager/${selectedManager}?${managerQueryParams.toString()}`),
-    enabled: !!selectedManager,
-  });
+  const summaryCards = useMemo(() => {
+    if (!report) {
+      return [
+        { label: "Получено", value: 0 },
+        { label: "Доставлено", value: 0 },
+        { label: "Возврат в главный склад", value: 0 },
+        { label: "Возврат из магазинов", value: 0 },
+      ];
+    }
+    return [
+      { label: "Получено", value: report.summary.received_total ?? 0 },
+      { label: "Доставлено", value: report.summary.delivered_total ?? 0 },
+      { label: "Возврат в главный склад", value: report.summary.return_to_main_total ?? 0 },
+      { label: "Возврат из магазинов", value: report.summary.return_from_shops_total ?? 0 },
+    ];
+  }, [report]);
+
+  const movementData = useMemo(() => {
+    if (!report) return [] as MovementRow[];
+    if (movementType === "delivery") return report.deliveries;
+    if (movementType === "return_to_main") return report.returns_to_main;
+    return report.returns_from_shops;
+  }, [movementType, report]);
+
+  const renderShopName = (row: MovementRow) => {
+    if (row.shop_name) return row.shop_name;
+    if (movementType === "return_to_main") return "Главный склад";
+    return "—";
+  };
+
+  const renderTime = (iso: string) => {
+    const date = new Date(iso);
+    return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const isSummaryLoading = (reportLoading || reportFetching) && !report;
+  const isMovementsLoading = (reportLoading || reportFetching) && !report;
+
+  const managerName = report?.manager_name ?? managers.find((manager) => manager.id === managerIdNumber)?.full_name;
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Отчеты</h1>
+      <div className="space-y-4">
+        <h1 className="text-3xl font-bold">Отчеты</h1>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-2">
+            <Label className="text-sm font-medium text-muted-foreground">Менеджер</Label>
+            <Select
+              value={selectedManagerId}
+              onValueChange={setSelectedManagerId}
+              disabled={managersLoading || managers.length === 0}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={managersLoading ? "Загрузка..." : "Выберите менеджера"} />
+              </SelectTrigger>
+              <SelectContent className="bg-background z-50">
+                {managers.map((manager) => (
+                  <SelectItem key={manager.id} value={String(manager.id)}>
+                    {manager.full_name || manager.username}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm font-medium text-muted-foreground">Дата</Label>
+            <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className={cn(
+                    "w-full justify-start text-left font-normal",
+                    !selectedDate && "text-muted-foreground"
+                  )}
+                >
+                  <CalendarIcon className="mr-2 h-4 w-4" />
+                  {selectedDate ? format(selectedDate, "PPP") : "Выберите дату"}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={(value) => {
+                    setSelectedDate(value ?? new Date());
+                    setCalendarOpen(false);
+                  }}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+      </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Общий отчет по товарам</CardTitle>
+          <div className="space-y-1">
+            <CardTitle>Сводка за день</CardTitle>
+            {managerName ? (
+              <p className="text-sm text-muted-foreground">Отчёт по менеджеру: {managerName}</p>
+            ) : null}
+          </div>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-3 gap-4">
-            <div className="text-center p-4 border rounded-lg">
-              <div className="text-2xl font-bold">{(productReport as any)?.total_products || 0}</div>
-              <div className="text-sm text-muted-foreground">Всего товаров</div>
-            </div>
-            <div className="text-center p-4 border rounded-lg">
-              <div className="text-2xl font-bold">{(productReport as any)?.total_dispatched || 0}</div>
-              <div className="text-sm text-muted-foreground">Отправлено</div>
-            </div>
-            <div className="text-center p-4 border rounded-lg">
-              <div className="text-2xl font-bold">{(productReport as any)?.total_returns || 0}</div>
-              <div className="text-sm text-muted-foreground">Возвратов</div>
-            </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {summaryCards.map((card) => (
+              <Card key={card.label}>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium text-muted-foreground">{card.label}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-semibold">
+                    {isSummaryLoading ? "—" : numberFormatter.format(Number(card.value ?? 0))}
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <div className="flex justify-between items-center">
-            <CardTitle>Отчет по менеджерам</CardTitle>
-            <div className="flex gap-4">
-              <div className="w-48">
-                <Label>Дата начала</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={"outline"}
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !startDate && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {startDate ? format(startDate, "PPP") : <span>Выберите дату</span>}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={startDate}
-                      onSelect={setStartDate}
-                      initialFocus
-                      className={cn("p-3 pointer-events-auto")}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-              <div className="w-48">
-                <Label>Дата окончания</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={"outline"}
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !endDate && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {endDate ? format(endDate, "PPP") : <span>Выберите дату</span>}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={endDate}
-                      onSelect={setEndDate}
-                      initialFocus
-                      className={cn("p-3 pointer-events-auto")}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-              <div className="w-64">
-                <Label>Выбрать менеджера</Label>
-                <Select value={selectedManager} onValueChange={setSelectedManager}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-background z-50">
-                    <SelectItem value="all">Все менеджеры</SelectItem>
-                    {(managers as any[]).map((manager: any) => (
-                      <SelectItem key={manager.id} value={manager.id.toString()}>
-                        {manager.full_name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+        <CardHeader className="space-y-2">
+          <CardTitle>Движения за выбранный день</CardTitle>
+          <div className="w-full sm:w-72">
+            <Label className="mb-2 block text-sm font-medium text-muted-foreground">Тип движения</Label>
+            <Select value={movementType} onValueChange={(value) => setMovementType(value as MovementType)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-background z-50">
+                {movementOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardHeader>
         <CardContent>
-          {selectedManager === "all" ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Менеджер</TableHead>
-                  <TableHead>Получено товаров</TableHead>
-                  <TableHead>Доставлено</TableHead>
-                  <TableHead>Возвратов</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(managerReport as any)?.map((report: any) => (
-                  <TableRow key={report.manager_id}>
-                    <TableCell>{report.manager_name}</TableCell>
-                    <TableCell>{report.total_received ?? report.total_dispatches ?? 0}</TableCell>
-                    <TableCell>{report.total_delivered ?? report.total_orders ?? 0}</TableCell>
-                    <TableCell>{report.total_returns ?? 0}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+          {!managerIdNumber ? (
+            <div className="rounded-lg border p-4 text-center text-muted-foreground">Выберите менеджера и дату</div>
+          ) : isMovementsLoading ? (
+            <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
+          ) : movementData.length === 0 ? (
+            <div className="rounded-lg border p-4 text-center text-muted-foreground">Нет данных</div>
           ) : (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-4">
-                <div className="text-center p-4 border rounded-lg">
-                  <div className="text-2xl font-bold">{(managerReport as any)?.total_received || 0}</div>
-                  <div className="text-sm text-muted-foreground">Получено товаров</div>
-                </div>
-                <div className="text-center p-4 border rounded-lg">
-                  <div className="text-2xl font-bold">{(managerReport as any)?.total_delivered || 0}</div>
-                  <div className="text-sm text-muted-foreground">Доставлено</div>
-                </div>
-                <div className="text-center p-4 border rounded-lg">
-                  <div className="text-2xl font-bold">{(managerReport as any)?.total_returns || 0}</div>
-                  <div className="text-sm text-muted-foreground">Возвратов</div>
-                </div>
+            <>
+              <div className="space-y-3 md:hidden">
+                {movementData.map((row) => (
+                  <div key={`${row.type}-${row.id}`} className="rounded-lg border p-4 space-y-2 bg-card">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold leading-tight">{renderShopName(row)}</p>
+                        <p className="text-xs text-muted-foreground">{renderTime(row.time)}</p>
+                      </div>
+                      <Button variant="ghost" size="icon" aria-label="Подробнее">
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
 
-              {(managerReport as any)?.dispatches && (managerReport as any).dispatches.length > 0 && (
-                <div>
-                  <h3 className="font-semibold mb-2">Детали отправок</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Дата</TableHead>
-                        <TableHead>Товар</TableHead>
-                        <TableHead>Количество</TableHead>
+              <div className="hidden md:block overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Магазин</TableHead>
+                      <TableHead>Время</TableHead>
+                      <TableHead className="w-16 text-right" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {movementData.map((row) => (
+                      <TableRow key={`${row.type}-${row.id}`}>
+                        <TableCell>{renderShopName(row)}</TableCell>
+                        <TableCell>{renderTime(row.time)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="icon" aria-label="Подробнее">
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(managerReport as any).dispatches.map((dispatch: any, idx: number) => (
-                        <TableRow key={idx}>
-                          <TableCell>
-                            {new Date(dispatch.created_at).toLocaleString('ru-RU', {
-                              year: 'numeric',
-                              month: '2-digit',
-                              day: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </TableCell>
-                          <TableCell>{dispatch.product_name}</TableCell>
-                          <TableCell>{dispatch.quantity}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </div>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

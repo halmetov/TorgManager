@@ -488,7 +488,7 @@ export default function ManagerOrders() {
               </div>
               <div className="space-y-2">
                 <Label>Добавить товар</Label>
-                <div className="flex gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row">
                   <Popover open={productOpen} onOpenChange={setProductOpen}>
                     <PopoverTrigger asChild>
                       <Button
@@ -502,7 +502,7 @@ export default function ManagerOrders() {
                         <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[320px] p-0" align="start">
+                    <PopoverContent className="w-[min(320px,90vw)] p-0" align="start">
                       <Command>
                         <CommandInput
                           placeholder="Поиск товара..."
@@ -541,7 +541,7 @@ export default function ManagerOrders() {
                     value={quantityInput}
                     onChange={(event) => setQuantityInput(event.target.value)}
                     placeholder="Кол-во"
-                    className="w-24"
+                    className="w-full sm:w-24"
                   />
                   <Input
                     type="number"
@@ -550,7 +550,7 @@ export default function ManagerOrders() {
                     value={priceInput}
                     onChange={(event) => setPriceInput(event.target.value)}
                     placeholder="Цена"
-                    className="w-28"
+                    className="w-full sm:w-28"
                   />
                   <Button type="button" onClick={addItem} disabled={isAddDisabled}>
                     <Plus className="h-4 w-4" />
@@ -559,39 +559,90 @@ export default function ManagerOrders() {
               </div>
             </div>
 
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Товар</TableHead>
-                  <TableHead className="w-28">Доступно</TableHead>
-                  <TableHead className="w-28">Количество</TableHead>
-                  <TableHead className="w-32">Цена</TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {items.length === 0 ? (
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">
-                      Товары не выбраны
-                    </TableCell>
+                    <TableHead>Товар</TableHead>
+                    <TableHead className="w-28">Доступно</TableHead>
+                    <TableHead className="w-28">Количество</TableHead>
+                    <TableHead className="w-32">Цена</TableHead>
+                    <TableHead className="w-12" />
                   </TableRow>
-                ) : (
-                  items.map((item) => {
-                    const stockItem = stockMap.get(item.product_id);
-                    return (
-                      <TableRow key={item.product_id}>
-                        <TableCell>{item.product_name}</TableCell>
-                        <TableCell>{stockItem?.quantity ?? 0}</TableCell>
-                        <TableCell>
+                </TableHeader>
+                <TableBody>
+                  {items.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center text-muted-foreground">
+                        Товары не выбраны
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    items.map((item) => {
+                      const stockItem = stockMap.get(item.product_id);
+                      return (
+                        <TableRow key={item.product_id}>
+                          <TableCell>{item.product_name}</TableCell>
+                          <TableCell>{stockItem?.quantity ?? 0}</TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={item.quantity}
+                              onChange={(event) => handleQuantityChange(item.product_id, event.target.value)}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={item.price}
+                              placeholder="—"
+                              onChange={(event) => handlePriceChange(item.product_id, event.target.value)}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button variant="ghost" size="icon" onClick={() => handleRemoveItem(item.product_id)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {items.length === 0 ? (
+                <div className="rounded-lg border p-4 text-center text-muted-foreground">Товары не выбраны</div>
+              ) : (
+                items.map((item) => {
+                  const stockItem = stockMap.get(item.product_id);
+                  return (
+                    <div key={item.product_id} className="rounded-lg border p-4 space-y-3 bg-card">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h3 className="text-base font-semibold leading-tight">{item.product_name}</h3>
+                          <p className="text-sm text-muted-foreground">
+                            Остаток: {stockItem?.quantity ?? 0}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <p className="text-xs uppercase text-muted-foreground">Количество</p>
                           <Input
                             type="number"
                             min={0}
                             value={item.quantity}
                             onChange={(event) => handleQuantityChange(item.product_id, event.target.value)}
                           />
-                        </TableCell>
-                        <TableCell>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs uppercase text-muted-foreground">Цена</p>
                           <Input
                             type="number"
                             min={0}
@@ -600,18 +651,23 @@ export default function ManagerOrders() {
                             placeholder="—"
                             onChange={(event) => handlePriceChange(item.product_id, event.target.value)}
                           />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button variant="ghost" size="icon" onClick={() => handleRemoveItem(item.product_id)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
+                        </div>
+                      </div>
+                      <div className="flex justify-end">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveItem(item.product_id)}
+                          aria-label={`Удалить ${item.product_name}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">Всего товаров: {totalRequested}</p>
@@ -634,49 +690,76 @@ export default function ManagerOrders() {
           </Button>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">№</TableHead>
-                <TableHead>Магазин</TableHead>
-                <TableHead>Дата</TableHead>
-                <TableHead className="w-24 text-right">Позиции</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {ordersLoading ? (
+          <div className="space-y-3 md:hidden">
+            {ordersLoading ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
+            ) : orders.length === 0 ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Выдач пока нет</div>
+            ) : (
+              orders.map((order) => (
+                <div key={order.id} className="rounded-lg border p-4 space-y-3 bg-card">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-semibold leading-tight">{order.shop_name}</h3>
+                      <p className="text-sm text-muted-foreground">{fmt(order.created_at)}</p>
+                    </div>
+                    <span className="text-sm font-medium text-muted-foreground">#{order.id}</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button size="sm" variant="outline" onClick={() => setDetailOrder(order)}>
+                      Подробнее
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground">
-                    Загрузка...
-                  </TableCell>
+                  <TableHead className="w-12">№</TableHead>
+                  <TableHead>Магазин</TableHead>
+                  <TableHead>Дата</TableHead>
+                  <TableHead className="w-24 text-right">Позиции</TableHead>
                 </TableRow>
-              ) : orders.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground">
-                    Выдач пока нет
-                  </TableCell>
-                </TableRow>
-              ) : (
-                orders.map((order) => (
-                  <TableRow key={order.id}>
-                    <TableCell>{order.id}</TableCell>
-                    <TableCell>{order.shop_name}</TableCell>
-                    <TableCell>{fmt(order.created_at)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => setDetailOrder(order)}>
-                        Подробнее
-                      </Button>
+              </TableHeader>
+              <TableBody>
+                {ordersLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                      Загрузка...
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : orders.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                      Выдач пока нет
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  orders.map((order) => (
+                    <TableRow key={order.id}>
+                      <TableCell>{order.id}</TableCell>
+                      <TableCell>{order.shop_name}</TableCell>
+                      <TableCell>{fmt(order.created_at)}</TableCell>
+                      <TableCell className="text-right">
+                        <Button size="sm" variant="outline" onClick={() => setDetailOrder(order)}>
+                          Подробнее
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
       <Dialog open={detailOrder !== null} onOpenChange={(open) => !open && setDetailOrder(null)}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="w-full max-w-[90vw] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Детали выдачи</DialogTitle>
           </DialogHeader>
@@ -688,24 +771,26 @@ export default function ManagerOrders() {
                 <p>Магазин: {detailOrder.shop_name}</p>
                 <p>Дата: {fmt(detailOrder.created_at)}</p>
               </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Товар</TableHead>
-                    <TableHead className="w-32">Количество</TableHead>
-                    <TableHead className="w-32">Цена</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {detailOrder.items.map((item) => (
-                    <TableRow key={item.product_id}>
-                      <TableCell>{item.product_name}</TableCell>
-                      <TableCell>{item.quantity}</TableCell>
-                      <TableCell>{item.price ?? "—"}</TableCell>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Товар</TableHead>
+                      <TableHead className="w-32">Количество</TableHead>
+                      <TableHead className="w-32">Цена</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {detailOrder.items.map((item) => (
+                      <TableRow key={item.product_id}>
+                        <TableCell>{item.product_name}</TableCell>
+                        <TableCell>{item.quantity}</TableCell>
+                        <TableCell>{item.price ?? "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
               <div className="text-sm text-muted-foreground space-y-1">
                 <p>Сумма: {currencyFormatter.format(detailOrder.payment?.total_amount ?? 0)}</p>
                 <p>Оплачено: {currencyFormatter.format(detailOrder.payment?.paid_amount ?? detailOrder.payment?.total_amount ?? 0)}</p>
@@ -717,7 +802,7 @@ export default function ManagerOrders() {
       </Dialog>
 
       <Dialog open={paymentDialogOpen} onOpenChange={handlePaymentDialogChange}>
-        <DialogContent>
+        <DialogContent className="w-full max-w-[90vw] sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Оплата заказа</DialogTitle>
           </DialogHeader>
