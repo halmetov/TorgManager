@@ -7,7 +7,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -41,6 +47,12 @@ interface ShopOrderItem {
   price?: number | null;
 }
 
+interface ShopOrderPayment {
+  total_amount: number;
+  paid_amount: number;
+  debt_amount: number;
+}
+
 interface ShopOrder {
   id: number;
   manager_id: number;
@@ -48,6 +60,7 @@ interface ShopOrder {
   shop_name: string;
   created_at: string;
   items: ShopOrderItem[];
+  payment?: ShopOrderPayment | null;
 }
 
 interface OrderFormItem {
@@ -56,6 +69,17 @@ interface OrderFormItem {
   quantity: string;
   price: string;
 }
+
+interface ShopOrderCreatePayload {
+  shop_id: number;
+  items: { product_id: number; quantity: number; price?: number | null }[];
+  payment?: { paid_amount: number } | null;
+}
+
+const currencyFormatter = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 
 const fmt = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—";
@@ -72,6 +96,11 @@ export default function ManagerOrders() {
   const [quantityInput, setQuantityInput] = useState("");
   const [priceInput, setPriceInput] = useState("");
   const [detailOrder, setDetailOrder] = useState<ShopOrder | null>(null);
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [pendingOrderPayload, setPendingOrderPayload] = useState<ShopOrderCreatePayload | null>(null);
+  const [pendingTotalAmount, setPendingTotalAmount] = useState(0);
+  const [paidAmountInput, setPaidAmountInput] = useState("");
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   const {
     data: stock = [],
@@ -227,13 +256,17 @@ export default function ManagerOrders() {
   };
 
   const orderMutation = useMutation({
-    mutationFn: (payload: { shop_id: number; items: { product_id: number; quantity: number; price?: number | null }[] }) =>
-      api.createShopOrder(payload),
+    mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
     onSuccess: () => {
       toast({ title: "Товары выданы магазину" });
       setShopId("");
       setItems([]);
       resetProductSelection();
+      setPendingOrderPayload(null);
+      setPaymentDialogOpen(false);
+      setPendingTotalAmount(0);
+      setPaidAmountInput("");
+      setPaymentError(null);
       queryClient.invalidateQueries({ queryKey: ["manager", "stock"] });
       refetchOrders();
     },
@@ -319,13 +352,104 @@ export default function ManagerOrders() {
       }
     }
 
-    orderMutation.mutate({
+    const aggregatedItems = Array.from(aggregated.values());
+    const computedTotal = aggregatedItems.reduce((sum, item) => {
+      const product = stockMap.get(item.product_id);
+      const price = item.price ?? product?.price ?? 0;
+      return sum + item.quantity * (price ?? 0);
+    }, 0);
+
+    setPendingOrderPayload({
       shop_id: Number(shopId),
-      items: Array.from(aggregated.values()),
+      items: aggregatedItems,
     });
+    setPendingTotalAmount(computedTotal);
+    setPaidAmountInput(computedTotal ? computedTotal.toFixed(2) : "0");
+    setPaymentError(null);
+    setPaymentDialogOpen(true);
   };
 
   const totalRequested = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const totalAmount = useMemo(() => {
+    return items.reduce((sum, item) => {
+      const quantity = Number(item.quantity || 0);
+      if (Number.isNaN(quantity)) {
+        return sum;
+      }
+
+      const stockItem = stockMap.get(item.product_id);
+      const priceValue = item.price.trim() !== "" ? Number(item.price) : stockItem?.price ?? 0;
+      if (Number.isNaN(priceValue) || priceValue == null) {
+        return sum;
+      }
+
+      return sum + quantity * priceValue;
+    }, 0);
+  }, [items, stockMap]);
+  const handlePaidAmountChange = (value: string) => {
+    setPaidAmountInput(value);
+    if (value.trim() === "") {
+      setPaymentError(null);
+      return;
+    }
+
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) {
+      setPaymentError("Введите корректную сумму");
+      return;
+    }
+
+    if (parsed < 0) {
+      setPaymentError("Сумма не может быть отрицательной");
+      return;
+    }
+
+    if (parsed > pendingTotalAmount) {
+      setPaymentError("Сумма не может превышать общий заказ");
+      return;
+    }
+
+    setPaymentError(null);
+  };
+
+  const handleConfirmOrder = () => {
+    if (!pendingOrderPayload) {
+      return;
+    }
+
+    const parsed = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
+    if (Number.isNaN(parsed)) {
+      setPaymentError("Введите корректную сумму");
+      return;
+    }
+
+    if (parsed < 0 || parsed > pendingTotalAmount) {
+      setPaymentError("Сумма оплаты должна быть от 0 до общей суммы заказа");
+      return;
+    }
+
+    orderMutation.mutate({
+      ...pendingOrderPayload,
+      payment: { paid_amount: parsed },
+    });
+  };
+
+  const pendingPaid = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
+  const pendingDebt = Math.max(
+    Number.isNaN(pendingPaid) ? pendingTotalAmount : pendingTotalAmount - pendingPaid,
+    0,
+  );
+
+  const handlePaymentDialogChange = (open: boolean) => {
+    setPaymentDialogOpen(open);
+    if (!open && !orderMutation.isPending) {
+      setPendingOrderPayload(null);
+      setPaymentError(null);
+      setPendingTotalAmount(0);
+      setPaidAmountInput("");
+    }
+  };
+
   const isAddDisabled =
     !selectedProduct ||
     !quantityInput.trim() ||
@@ -491,6 +615,9 @@ export default function ManagerOrders() {
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">Всего товаров: {totalRequested}</p>
+              <p className="text-sm text-muted-foreground">
+                Сумма заказа: {currencyFormatter.format(totalAmount)}
+              </p>
               <Button type="submit" className="w-full sm:w-56" disabled={orderMutation.isPending}>
                 {orderMutation.isPending ? "Отправка..." : "Отдать"}
               </Button>
@@ -579,8 +706,47 @@ export default function ManagerOrders() {
                   ))}
                 </TableBody>
               </Table>
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>Сумма: {currencyFormatter.format(detailOrder.payment?.total_amount ?? 0)}</p>
+                <p>Оплачено: {currencyFormatter.format(detailOrder.payment?.paid_amount ?? detailOrder.payment?.total_amount ?? 0)}</p>
+                <p>Долг: {currencyFormatter.format(detailOrder.payment?.debt_amount ?? 0)}</p>
+              </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={paymentDialogOpen} onOpenChange={handlePaymentDialogChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Оплата заказа</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-sm text-muted-foreground space-y-1">
+              <p>Сумма заказа: {currencyFormatter.format(pendingTotalAmount)}</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="paid-amount">Сколько клиент платит сейчас</Label>
+              <Input
+                id="paid-amount"
+                type="number"
+                min={0}
+                step="0.01"
+                value={paidAmountInput}
+                onChange={(event) => handlePaidAmountChange(event.target.value)}
+              />
+              <p className="text-sm text-muted-foreground">Долг: {currencyFormatter.format(pendingDebt)}</p>
+              {paymentError ? <p className="text-sm text-destructive">{paymentError}</p> : null}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => handlePaymentDialogChange(false)} disabled={orderMutation.isPending}>
+              Отмена
+            </Button>
+            <Button onClick={handleConfirmOrder} disabled={orderMutation.isPending || paymentError !== null}>
+              {orderMutation.isPending ? "Сохранение..." : "Сохранить"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

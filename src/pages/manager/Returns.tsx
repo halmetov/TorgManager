@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -39,6 +40,24 @@ interface ShopReturnFormItem {
   quantity: string;
 }
 
+interface ShopReturnItem {
+  product_id: number;
+  product_name: string;
+  quantity: number;
+}
+
+interface ShopReturn {
+  id: number;
+  manager_id: number;
+  shop_id: number;
+  shop_name: string;
+  created_at: string;
+  items: ShopReturnItem[];
+}
+
+const fmt = (iso?: string | null) =>
+  iso ? new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—";
+
 export default function ManagerReturns() {
   const { toast } = useToast();
 
@@ -48,6 +67,7 @@ export default function ManagerReturns() {
   const [shopProductOpen, setShopProductOpen] = useState(false);
   const [selectedShopProduct, setSelectedShopProduct] = useState<ManagerStockItem | null>(null);
   const [shopQuantityInput, setShopQuantityInput] = useState("");
+  const [detailReturn, setDetailReturn] = useState<ShopReturn | null>(null);
 
   const {
     data: stock = [],
@@ -68,6 +88,16 @@ export default function ManagerReturns() {
     queryFn: () => api.getMyShops() as Promise<ShopInfo[]>,
   });
 
+  const {
+    data: shopReturns = [],
+    isFetching: returnsLoading,
+    error: shopReturnsError,
+    refetch: refetchShopReturns,
+  } = useQuery<ShopReturn[]>({
+    queryKey: ["manager", "shop-returns"],
+    queryFn: () => api.getShopReturns() as Promise<ShopReturn[]>,
+  });
+
   useEffect(() => {
     if (stockError) {
       const message = stockError instanceof Error ? stockError.message : "Не удалось загрузить остатки";
@@ -81,6 +111,13 @@ export default function ManagerReturns() {
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     }
   }, [shopsError, toast]);
+
+  useEffect(() => {
+    if (shopReturnsError) {
+      const message = shopReturnsError instanceof Error ? shopReturnsError.message : "Не удалось загрузить возвраты";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [shopReturnsError, toast]);
 
   const shopProductOptions = useMemo(() => {
     const term = shopProductSearch.trim().toLowerCase();
@@ -100,6 +137,7 @@ export default function ManagerReturns() {
       setShopQuantityInput("");
       setSelectedShopProduct(null);
       setShopProductSearch("");
+      refetchShopReturns();
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "Не удалось зарегистрировать возврат";
@@ -330,6 +368,89 @@ export default function ManagerReturns() {
           </form>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <CardTitle>Журнал возвратов</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => refetchShopReturns()} disabled={returnsLoading}>
+            {returnsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Обновить"}
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12">№</TableHead>
+                <TableHead>Магазин</TableHead>
+                <TableHead>Дата</TableHead>
+                <TableHead className="w-24 text-right">Позиции</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {returnsLoading ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    Загрузка...
+                  </TableCell>
+                </TableRow>
+              ) : shopReturns.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    Возвратов пока нет
+                  </TableCell>
+                </TableRow>
+              ) : (
+                shopReturns.map((returnDoc) => (
+                  <TableRow key={returnDoc.id}>
+                    <TableCell>{returnDoc.id}</TableCell>
+                    <TableCell>{returnDoc.shop_name}</TableCell>
+                    <TableCell>{fmt(returnDoc.created_at)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button size="sm" variant="outline" onClick={() => setDetailReturn(returnDoc)}>
+                        Подробнее
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Dialog open={detailReturn !== null} onOpenChange={(open) => !open && setDetailReturn(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Детали возврата</DialogTitle>
+          </DialogHeader>
+          {!detailReturn ? (
+            <p className="text-sm text-muted-foreground">Загрузка...</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>Магазин: {detailReturn.shop_name}</p>
+                <p>Дата: {fmt(detailReturn.created_at)}</p>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Товар</TableHead>
+                    <TableHead className="w-32">Количество</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {detailReturn.items.map((item) => (
+                    <TableRow key={item.product_id}>
+                      <TableCell>{item.product_name}</TableCell>
+                      <TableCell>{item.quantity}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
