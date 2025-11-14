@@ -991,6 +991,7 @@ def _fetch_shop_orders(
     query = db.query(models.ShopOrder).options(
         joinedload(models.ShopOrder.items).joinedload(models.ShopOrderItem.product),
         joinedload(models.ShopOrder.shop),
+        joinedload(models.ShopOrder.payment),
     )
 
     if manager_id is not None:
@@ -1023,6 +1024,14 @@ def _fetch_shop_orders(
                     }
                     for item in items
                 ],
+                "payment":
+                    {
+                        "total_amount": _to_float(order.payment.total_amount),
+                        "paid_amount": _to_float(order.payment.paid_amount),
+                        "debt_amount": _to_float(order.payment.debt_amount),
+                    }
+                    if order.payment
+                    else None,
             }
         )
 
@@ -1728,8 +1737,10 @@ def create_shop_order(
         if quantity_value <= 0:
             raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
 
-        price_value = float(item.price) if item.price is not None else None
-        entry = aggregated.setdefault(item.product_id, {"quantity": 0, "price": price_value})
+        price_value = Decimal(item.price) if item.price is not None else None
+        entry = aggregated.setdefault(
+            item.product_id, {"quantity": 0, "price": price_value}
+        )
         entry["quantity"] += quantity_value
         if price_value is not None:
             entry["price"] = price_value
@@ -1775,6 +1786,7 @@ def create_shop_order(
         )
 
     now = datetime.now(timezone.utc)
+    total_amount = Decimal("0")
 
     try:
         order_row = models.ShopOrder(
@@ -1788,18 +1800,42 @@ def create_shop_order(
         for product_id, data in aggregated.items():
             product = manager_map[product_id]
             requested = data["quantity"]
-            price_value = data["price"] if data["price"] is not None else product.price
+            fallback_price = Decimal(str(product.price or 0))
+            price_decimal = data["price"] if data["price"] is not None else fallback_price
 
             product.quantity = (product.quantity or 0) - requested
+
+            line_total = Decimal(str(requested)) * price_decimal
+            total_amount += line_total
 
             db.add(
                 models.ShopOrderItem(
                     order_id=order_row.id,
                     product_id=product_id,
                     quantity=requested,
-                    price=price_value,
+                    price=price_decimal,
                 )
             )
+
+        payment_data = order.payment
+        paid_amount = total_amount
+        if payment_data and payment_data.paid_amount is not None:
+            paid_amount = Decimal(payment_data.paid_amount)
+
+        if paid_amount < 0 or paid_amount > total_amount:
+            raise HTTPException(status_code=400, detail="Недопустимая сумма оплаты")
+
+        debt_amount = total_amount - paid_amount
+
+        db.add(
+            models.ShopOrderPayment(
+                order_id=order_row.id,
+                total_amount=total_amount,
+                paid_amount=paid_amount,
+                debt_amount=debt_amount,
+                created_at=now,
+            )
+        )
 
         db.commit()
     except HTTPException:
@@ -1827,7 +1863,7 @@ def list_shop_orders(
     return _fetch_shop_orders(db, manager_id=current_user.id)
 
 
-@app.post("/shop-returns", response_model=schemas.ShopReturnCreated)
+@app.post("/shop-returns", response_model=schemas.ShopReturnOut)
 def create_shop_return(
     payload: schemas.ShopReturnCreate,
     current_user: models.User = Depends(get_current_user),
@@ -1904,7 +1940,11 @@ def create_shop_return(
         db.rollback()
         raise
 
-    return schemas.ShopReturnCreated(id=return_row.id, created_at=return_row.created_at)
+    created_returns = _fetch_shop_returns(db, return_ids=[return_row.id])
+    if not created_returns:
+        raise HTTPException(status_code=500, detail="Не удалось получить созданный возврат")
+
+    return created_returns[0]
 
 
 @app.get("/shop-returns", response_model=List[schemas.ShopReturnOut])

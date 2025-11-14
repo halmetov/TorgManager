@@ -118,6 +118,12 @@ class ShopOrder(Base):
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     items = relationship("ShopOrderItem", back_populates="order")
+    payment = relationship(
+        "ShopOrderPayment",
+        uselist=False,
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
     manager = relationship("User")
     shop = relationship("Shop")
 
@@ -133,6 +139,19 @@ class ShopOrderItem(Base):
 
     order = relationship("ShopOrder", back_populates="items")
     product = relationship("Product")
+
+
+class ShopOrderPayment(Base):
+    __tablename__ = "shop_order_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("shop_orders.id"), nullable=False, unique=True)
+    total_amount = Column(Numeric, nullable=False)
+    paid_amount = Column(Numeric, nullable=False)
+    debt_amount = Column(Numeric, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    order = relationship("ShopOrder", back_populates="payment")
 
 
 class ShopReturn(Base):

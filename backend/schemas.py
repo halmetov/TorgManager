@@ -1,6 +1,7 @@
 from pydantic import BaseModel, condecimal
 from typing import Optional, List
 from datetime import datetime, timezone
+from decimal import Decimal
 
 class ProductBase(BaseModel):
     name: str
@@ -199,9 +200,14 @@ class ShopOrderItemCreate(BaseModel):
     price: Optional[condecimal(ge=0)] = None
 
 
+class ShopOrderPaymentData(BaseModel):
+    paid_amount: condecimal(ge=0)
+
+
 class ShopOrderCreate(BaseModel):
     shop_id: int
     items: List[ShopOrderItemCreate]
+    payment: Optional[ShopOrderPaymentData] = None
 
 
 class ShopOrderItemOut(BaseModel):
@@ -211,6 +217,12 @@ class ShopOrderItemOut(BaseModel):
     price: Optional[float] = None
 
 
+class ShopOrderPaymentOut(BaseModel):
+    total_amount: Decimal
+    paid_amount: Decimal
+    debt_amount: Decimal
+
+
 class ShopOrderOut(BaseModel):
     id: int
     manager_id: int
@@ -218,6 +230,7 @@ class ShopOrderOut(BaseModel):
     shop_name: str
     created_at: datetime
     items: List[ShopOrderItemOut]
+    payment: Optional[ShopOrderPaymentOut] = None
 
 
 class ShopReturnItemCreate(BaseModel):
@@ -243,11 +256,6 @@ class ShopReturnOut(BaseModel):
     shop_name: str
     created_at: datetime
     items: List[ShopReturnItemOut]
-
-
-class ShopReturnCreated(BaseModel):
-    id: int
-    created_at: datetime
 
 
 class ManagerReturnItemCreate(BaseModel):
