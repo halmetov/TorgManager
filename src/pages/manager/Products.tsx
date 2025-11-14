@@ -42,6 +42,14 @@ export default function ManagerProducts() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
   const [returnQuantities, setReturnQuantities] = useState<Record<number, string>>({});
+  const priceFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("ru-RU", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+    []
+  );
 
   const {
     data: products = [],
@@ -249,7 +257,7 @@ export default function ManagerProducts() {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Поиск по названию"
-          className="md:w-72"
+          className="w-full md:w-72"
         />
       </div>
 
@@ -258,40 +266,62 @@ export default function ManagerProducts() {
           <CardTitle>Остатки</CardTitle>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Название</TableHead>
-                <TableHead>Количество</TableHead>
-                <TableHead>Цена</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    Загрузка...
-                  </TableCell>
+                  <TableHead>Название</TableHead>
+                  <TableHead>Количество</TableHead>
+                  <TableHead>Цена</TableHead>
                 </TableRow>
-              ) : productsList.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    Нет товаров
-                  </TableCell>
-                </TableRow>
-              ) : (
-                productsList.map((product) => (
-                  <TableRow key={product.id}>
-                    <TableCell>{product.name}</TableCell>
-                    <TableCell>{product.quantity}</TableCell>
-                    <TableCell>
-                      {product.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₸
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      Загрузка...
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : productsList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="text-center text-muted-foreground">
+                      Нет товаров
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  productsList.map((product) => (
+                    <TableRow key={product.id}>
+                      <TableCell>{product.name}</TableCell>
+                      <TableCell>{product.quantity}</TableCell>
+                      <TableCell>{priceFormatter.format(product.price ?? 0)} ₸</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="space-y-3 md:hidden">
+            {isLoading ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
+            ) : productsList.length === 0 ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Нет товаров</div>
+            ) : (
+              productsList.map((product) => (
+                <div key={product.id} className="rounded-lg border p-4 space-y-2 bg-card">
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="text-base font-semibold leading-tight">{product.name}</h3>
+                    <span className="text-sm text-muted-foreground">{product.quantity} шт.</span>
+                  </div>
+                  {product.price ? (
+                    <p className="text-sm text-muted-foreground">
+                      Цена: {priceFormatter.format(product.price)} ₸
+                    </p>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -309,46 +339,82 @@ export default function ManagerProducts() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleReturnSubmit} className="space-y-6">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Товар</TableHead>
-                  <TableHead className="w-24">Доступно</TableHead>
-                  <TableHead className="w-32">К возврату</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {isLoading ? (
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      Загрузка...
-                    </TableCell>
+                    <TableHead>Товар</TableHead>
+                    <TableHead className="w-24">Доступно</TableHead>
+                    <TableHead className="w-32">К возврату</TableHead>
                   </TableRow>
-                ) : productsList.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      Нет товаров для возврата
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  productsList.map((product) => (
-                    <TableRow key={product.id}>
-                      <TableCell>{product.name}</TableCell>
-                      <TableCell>{product.quantity}</TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min={0}
-                          max={product.quantity}
-                          value={returnQuantities[product.id] ?? ""}
-                          onChange={(event) => handleReturnQuantityChange(product.id, event.target.value)}
-                        />
+                </TableHeader>
+                <TableBody>
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center text-muted-foreground">
+                        Загрузка...
                       </TableCell>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                  ) : productsList.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center text-muted-foreground">
+                        Нет товаров для возврата
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    productsList.map((product) => (
+                      <TableRow key={product.id}>
+                        <TableCell>{product.name}</TableCell>
+                        <TableCell>{product.quantity}</TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={product.quantity}
+                            value={returnQuantities[product.id] ?? ""}
+                            onChange={(event) => handleReturnQuantityChange(product.id, event.target.value)}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {isLoading ? (
+                <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
+              ) : productsList.length === 0 ? (
+                <div className="rounded-lg border p-4 text-center text-muted-foreground">
+                  Нет товаров для возврата
+                </div>
+              ) : (
+                productsList.map((product) => (
+                  <div key={product.id} className="rounded-lg border p-4 space-y-3 bg-card">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h3 className="text-base font-semibold leading-tight">{product.name}</h3>
+                        <p className="text-sm text-muted-foreground">Доступно: {product.quantity}</p>
+                      </div>
+                      {product.price ? (
+                        <span className="text-sm text-muted-foreground">
+                          {priceFormatter.format(product.price)} ₸
+                        </span>
+                      ) : null}
+                    </div>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={product.quantity}
+                      value={returnQuantities[product.id] ?? ""}
+                      onChange={(event) => handleReturnQuantityChange(product.id, event.target.value)}
+                      placeholder="Кол-во"
+                    />
+                  </div>
+                ))
+              )}
+            </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">Всего к возврату: {totalReturnRequested}</p>

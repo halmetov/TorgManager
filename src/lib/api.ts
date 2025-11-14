@@ -220,6 +220,10 @@ class ApiClient {
     return this.get('/managers');
   }
 
+  async getManagersList() {
+    return this.getManagers();
+  }
+
   async createManager(data: any) {
     return this.post('/managers', data);
   }
@@ -304,6 +308,19 @@ class ApiClient {
 
   async getManagerSummaryReport() {
     return this.get('/reports/manager-summary');
+  }
+
+  async getManagerDailyReport(date: string) {
+    const params = new URLSearchParams();
+    params.set('date', date);
+    return this.get(`/reports/manager/daily?${params.toString()}`);
+  }
+
+  async getAdminDailyReport(managerId: number, date: string) {
+    const params = new URLSearchParams();
+    params.set('manager_id', String(managerId));
+    params.set('date', date);
+    return this.get(`/reports/admin/daily?${params.toString()}`);
   }
 }
 export const api = new ApiClient(API_BASE_URL);

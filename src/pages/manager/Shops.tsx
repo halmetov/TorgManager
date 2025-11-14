@@ -154,7 +154,7 @@ export default function ManagerShops() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-3xl font-bold">Мои магазины</h1>
         <Dialog open={isCreateOpen} onOpenChange={(open) => {
           setIsCreateOpen(open);
@@ -168,7 +168,7 @@ export default function ManagerShops() {
               Добавить магазин
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="w-full max-w-[90vw] sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>Новый магазин</DialogTitle>
             </DialogHeader>
@@ -222,61 +222,104 @@ export default function ManagerShops() {
           <CardTitle>Список магазинов</CardTitle>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Название</TableHead>
-                <TableHead>Адрес</TableHead>
-                <TableHead>Телефон</TableHead>
-                <TableHead>№ Холодильника</TableHead>
-                <TableHead className="w-[140px] text-right">Действия</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
+          <div className="space-y-3 md:hidden">
+            {isLoading ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
+            ) : shopsList.length === 0 ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Магазины не найдены</div>
+            ) : (
+              shopsList.map((shop) => (
+                <div key={shop.id} className="rounded-lg border p-4 space-y-3 bg-card">
+                  <div>
+                    <h3 className="text-lg font-semibold leading-tight">{shop.name}</h3>
+                    {shop.address ? (
+                      <p className="text-sm text-muted-foreground">{shop.address}</p>
+                    ) : null}
+                  </div>
+                  <div className="text-sm text-muted-foreground space-y-1">
+                    {shop.phone ? <p>Телефон: {shop.phone}</p> : null}
+                    <p>Холодильник: {shop.refrigerator_number}</p>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => handleEditClick(shop)}
+                      aria-label={`Редактировать ${shop.name}`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      onClick={() => handleDelete(shop)}
+                      aria-label={`Удалить ${shop.name}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
-                    Загрузка...
-                  </TableCell>
+                  <TableHead>Название</TableHead>
+                  <TableHead>Адрес</TableHead>
+                  <TableHead>Телефон</TableHead>
+                  <TableHead>№ Холодильника</TableHead>
+                  <TableHead className="w-[140px] text-right">Действия</TableHead>
                 </TableRow>
-              ) : shopsList.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
-                    Магазины не найдены
-                  </TableCell>
-                </TableRow>
-              ) : (
-                shopsList.map((shop) => (
-                  <TableRow key={shop.id}>
-                    <TableCell>{shop.name}</TableCell>
-                    <TableCell>{shop.address}</TableCell>
-                    <TableCell>{shop.phone}</TableCell>
-                    <TableCell>{shop.refrigerator_number}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          onClick={() => handleEditClick(shop)}
-                          aria-label={`Редактировать ${shop.name}`}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="icon"
-                          onClick={() => handleDelete(shop)}
-                          aria-label={`Удалить ${shop.name}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center text-muted-foreground">
+                      Загрузка...
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : shopsList.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center text-muted-foreground">
+                      Магазины не найдены
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  shopsList.map((shop) => (
+                    <TableRow key={shop.id}>
+                      <TableCell>{shop.name}</TableCell>
+                      <TableCell>{shop.address}</TableCell>
+                      <TableCell>{shop.phone}</TableCell>
+                      <TableCell>{shop.refrigerator_number}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={() => handleEditClick(shop)}
+                            aria-label={`Редактировать ${shop.name}`}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="icon"
+                            onClick={() => handleDelete(shop)}
+                            aria-label={`Удалить ${shop.name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
@@ -287,7 +330,7 @@ export default function ManagerShops() {
           resetEditForm();
         }
       }}>
-        <DialogContent>
+        <DialogContent className="w-full max-w-[90vw] sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Редактировать магазин</DialogTitle>
           </DialogHeader>

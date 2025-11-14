@@ -1,6 +1,6 @@
 from pydantic import BaseModel, condecimal
-from typing import Optional, List
-from datetime import datetime, timezone
+from typing import Optional, List, Literal
+from datetime import datetime, timezone, date
 from decimal import Decimal
 
 class ProductBase(BaseModel):
@@ -283,3 +283,30 @@ class ManagerReturnOut(BaseModel):
     manager_id: int
     created_at: datetime
     items: List[ManagerReturnItemOut]
+
+
+class ManagerDailySummary(BaseModel):
+    received_total: Decimal
+    delivered_total: Decimal
+    return_to_main_total: Decimal
+    return_from_shops_total: Decimal
+
+
+class MovementRow(BaseModel):
+    time: datetime
+    shop_name: Optional[str] = None
+    type: Literal["delivery", "return_to_main", "return_from_shop"]
+    id: int
+
+
+class ManagerDailyReport(BaseModel):
+    date: date
+    summary: ManagerDailySummary
+    deliveries: List[MovementRow]
+    returns_to_main: List[MovementRow]
+    returns_from_shops: List[MovementRow]
+
+
+class AdminDailyReport(ManagerDailyReport):
+    manager_id: int
+    manager_name: str

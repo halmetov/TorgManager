@@ -2,7 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session, joinedload
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+from datetime import time as time_type
 from typing import Any, Dict, List, Optional, Sequence
 from decimal import Decimal
 import os
@@ -10,7 +11,7 @@ import secrets
 import models
 import schemas
 from database import engine, get_db
-from sqlalchemy import inspect, text, bindparam
+from sqlalchemy import inspect, text, bindparam, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from passlib.context import CryptContext
 import jwt
@@ -162,6 +163,14 @@ def _to_optional_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     return _to_float(value)
+
+
+def _to_decimal(value: Any) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    if value is None:
+        return Decimal("0")
+    return Decimal(str(value))
 
 # Helper functions
 def verify_password(plain_password, hashed_password):
@@ -1084,6 +1093,138 @@ def _fetch_shop_returns(
     return results
 
 
+def _get_day_bounds(target_date: date) -> tuple[datetime, datetime]:
+    start = datetime.combine(target_date, time_type.min)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _build_manager_daily_report(
+    db: Session,
+    *,
+    manager_id: int,
+    report_date: date,
+) -> tuple[schemas.ManagerDailyReport, models.User]:
+    manager = (
+        db.query(models.User)
+        .filter(models.User.id == manager_id, models.User.role == "manager")
+        .first()
+    )
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Менеджер не найден")
+
+    start, end = _get_day_bounds(report_date)
+
+    received_total_raw = (
+        db.query(func.coalesce(func.sum(models.Dispatch.quantity), 0))
+        .filter(models.Dispatch.manager_id == manager.id)
+        .filter(models.Dispatch.created_at >= start, models.Dispatch.created_at < end)
+        .filter(text("COALESCE(dispatches.status, 'sent') IN ('sent','accepted')"))
+        .scalar()
+        or 0
+    )
+
+    delivered_total_raw = (
+        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.manager_id == manager.id)
+        .filter(models.ShopOrder.created_at >= start, models.ShopOrder.created_at < end)
+        .scalar()
+        or 0
+    )
+
+    return_to_main_total_raw = (
+        db.query(func.coalesce(func.sum(models.ManagerReturnItem.quantity), 0))
+        .join(models.ManagerReturn, models.ManagerReturnItem.return_id == models.ManagerReturn.id)
+        .filter(models.ManagerReturn.manager_id == manager.id)
+        .filter(models.ManagerReturn.created_at >= start, models.ManagerReturn.created_at < end)
+        .scalar()
+        or 0
+    )
+
+    return_from_shops_total_raw = (
+        db.query(func.coalesce(func.sum(models.ShopReturnItem.quantity), 0))
+        .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .filter(models.ShopReturn.manager_id == manager.id)
+        .filter(models.ShopReturn.created_at >= start, models.ShopReturn.created_at < end)
+        .scalar()
+        or 0
+    )
+
+    deliveries_rows = (
+        db.query(models.ShopOrder)
+        .options(joinedload(models.ShopOrder.shop))
+        .filter(models.ShopOrder.manager_id == manager.id)
+        .filter(models.ShopOrder.created_at >= start, models.ShopOrder.created_at < end)
+        .order_by(models.ShopOrder.created_at.asc(), models.ShopOrder.id.asc())
+        .all()
+    )
+
+    returns_to_main_rows = (
+        db.query(models.ManagerReturn)
+        .filter(models.ManagerReturn.manager_id == manager.id)
+        .filter(models.ManagerReturn.created_at >= start, models.ManagerReturn.created_at < end)
+        .order_by(models.ManagerReturn.created_at.asc(), models.ManagerReturn.id.asc())
+        .all()
+    )
+
+    returns_from_shops_rows = (
+        db.query(models.ShopReturn)
+        .options(joinedload(models.ShopReturn.shop))
+        .filter(models.ShopReturn.manager_id == manager.id)
+        .filter(models.ShopReturn.created_at >= start, models.ShopReturn.created_at < end)
+        .order_by(models.ShopReturn.created_at.asc(), models.ShopReturn.id.asc())
+        .all()
+    )
+
+    summary = schemas.ManagerDailySummary(
+        received_total=_to_decimal(received_total_raw),
+        delivered_total=_to_decimal(delivered_total_raw),
+        return_to_main_total=_to_decimal(return_to_main_total_raw),
+        return_from_shops_total=_to_decimal(return_from_shops_total_raw),
+    )
+
+    deliveries = [
+        schemas.MovementRow(
+            id=order.id,
+            time=order.created_at,
+            shop_name=order.shop.name if order.shop else None,
+            type="delivery",
+        )
+        for order in deliveries_rows
+    ]
+
+    returns_to_main = [
+        schemas.MovementRow(
+            id=return_doc.id,
+            time=return_doc.created_at,
+            shop_name=None,
+            type="return_to_main",
+        )
+        for return_doc in returns_to_main_rows
+    ]
+
+    returns_from_shops = [
+        schemas.MovementRow(
+            id=return_doc.id,
+            time=return_doc.created_at,
+            shop_name=return_doc.shop.name if return_doc.shop else None,
+            type="return_from_shop",
+        )
+        for return_doc in returns_from_shops_rows
+    ]
+
+    report = schemas.ManagerDailyReport(
+        date=report_date,
+        summary=summary,
+        deliveries=deliveries,
+        returns_to_main=returns_to_main,
+        returns_from_shops=returns_from_shops,
+    )
+
+    return report, manager
+
+
 def _fetch_manager_returns(
     db: Session,
     *,
@@ -1479,6 +1620,46 @@ def get_incoming_detail(
         "created_at": header["created_at"],
         "items": [dict(item) for item in items],
     }
+
+@app.get("/reports/manager/daily", response_model=schemas.ManagerDailyReport)
+def get_manager_daily_report(
+    report_date: date = Query(..., alias="date"),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Only manager can view this report")
+
+    report, _ = _build_manager_daily_report(
+        db,
+        manager_id=current_user.id,
+        report_date=report_date,
+    )
+    return report
+
+
+@app.get("/reports/admin/daily", response_model=schemas.AdminDailyReport)
+def get_admin_daily_report(
+    manager_id: int = Query(...),
+    report_date: date = Query(..., alias="date"),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can view this report")
+
+    report, manager = _build_manager_daily_report(
+        db,
+        manager_id=manager_id,
+        report_date=report_date,
+    )
+    manager_name = manager.full_name or manager.username
+    return schemas.AdminDailyReport(
+        manager_id=manager.id,
+        manager_name=manager_name,
+        **report.model_dump(),
+    )
+
 
 # Reports endpoints
 @app.get("/reports/products")
