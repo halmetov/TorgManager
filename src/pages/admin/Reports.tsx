@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { CalendarIcon, Eye } from "lucide-react";
+import { CalendarIcon, Eye, Loader2 } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ManagerOption {
   id: number;
@@ -52,6 +53,62 @@ const movementOptions: { value: MovementType; label: string }[] = [
   { value: "return_from_shop", label: "Возврат из магазинов" },
 ];
 
+interface ShopOrderDetailItem {
+  product_id: number;
+  product_name: string;
+  quantity: string | number;
+  price?: string | number | null;
+  line_total: string | number;
+  is_bonus: boolean;
+}
+
+interface ShopOrderDetail {
+  id: number;
+  manager_id: number;
+  manager_name: string;
+  shop_id: number;
+  shop_name: string;
+  created_at: string;
+  total_quantity: string | number;
+  total_amount: string | number;
+  items: ShopOrderDetailItem[];
+}
+
+interface ManagerReturnDetailItem {
+  product_id: number;
+  product_name: string;
+  quantity: string | number;
+}
+
+interface ManagerReturnDetail {
+  id: number;
+  manager_id: number;
+  manager_name: string;
+  created_at: string;
+  items: ManagerReturnDetailItem[];
+}
+
+interface ShopReturnDetailItem {
+  product_id: number;
+  product_name: string;
+  quantity: string | number;
+}
+
+interface ShopReturnDetail {
+  id: number;
+  manager_id: number;
+  manager_name: string;
+  shop_id: number;
+  shop_name: string;
+  created_at: string;
+  items: ShopReturnDetailItem[];
+}
+
+type MovementDetail =
+  | { type: "delivery"; data: ShopOrderDetail }
+  | { type: "return_to_main"; data: ManagerReturnDetail }
+  | { type: "return_from_shop"; data: ShopReturnDetail };
+
 const numberFormatter = new Intl.NumberFormat("ru-RU", {
   minimumFractionDigits: 0,
   maximumFractionDigits: 2,
@@ -63,6 +120,11 @@ export default function AdminReports() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [movementType, setMovementType] = useState<MovementType>("delivery");
+  const [detail, setDetail] = useState<MovementDetail | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
+  const [currentDetailType, setCurrentDetailType] = useState<MovementType | null>(null);
 
   const { data: managers = [], isLoading: managersLoading } = useQuery<ManagerOption[]>({
     queryKey: ["admin", "managers"],
@@ -140,10 +202,184 @@ export default function AdminReports() {
     return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
   };
 
+  const formatDateTime = (iso: string) =>
+    new Date(iso).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" });
+
+  const formatValue = (value: string | number | null | undefined) =>
+    numberFormatter.format(Number(value ?? 0));
+
+  const formatCurrency = (value: string | number | null | undefined) => `${formatValue(value)} ₸`;
+
+  const getTotalQuantity = (items: { quantity: string | number }[]) =>
+    items.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
+
   const isSummaryLoading = (reportLoading || reportFetching) && !report;
   const isMovementsLoading = (reportLoading || reportFetching) && !report;
 
   const managerName = report?.manager_name ?? managers.find((manager) => manager.id === managerIdNumber)?.full_name;
+
+  const handleViewDetails = async (row: MovementRow) => {
+    const key = `${row.type}-${row.id}`;
+    setActiveRowKey(key);
+    setCurrentDetailType(row.type);
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetail(null);
+
+    try {
+      if (row.type === "delivery") {
+        const data = await api.getShopOrderDetail(row.id);
+        setDetail({ type: row.type, data });
+      } else if (row.type === "return_to_main") {
+        const data = await api.getManagerReturnDetail(row.id);
+        setDetail({ type: row.type, data });
+      } else {
+        const data = await api.getShopReturnDetail(row.id);
+        setDetail({ type: row.type, data });
+      }
+    } catch (detailError) {
+      setDetailOpen(false);
+      const message =
+        detailError instanceof Error ? detailError.message : "Не удалось загрузить детали";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    } finally {
+      setDetailLoading(false);
+      setActiveRowKey(null);
+    }
+  };
+
+  const handleDetailOpenChange = (open: boolean) => {
+    setDetailOpen(open);
+    if (!open) {
+      setDetail(null);
+      setCurrentDetailType(null);
+    }
+  };
+
+  const renderDetailContent = () => {
+    if (detailLoading) {
+      return <div className="py-6 text-center text-muted-foreground">Загрузка...</div>;
+    }
+
+    if (!detail) {
+      return <div className="py-6 text-center text-muted-foreground">Нет данных</div>;
+    }
+
+    if (detail.type === "delivery") {
+      const data = detail.data;
+      return (
+        <div className="space-y-4">
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Магазин: {data.shop_name}</p>
+            <p>Дата: {formatDateTime(data.created_at)}</p>
+            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Товар</TableHead>
+                  <TableHead className="w-24">Кол-во</TableHead>
+                  <TableHead className="w-28">Цена</TableHead>
+                  <TableHead className="w-24 text-center">Бонус</TableHead>
+                  <TableHead className="w-32">Сумма</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.items.map((item, index) => (
+                  <TableRow key={`${item.product_id}-${index}`}>
+                    <TableCell>{item.product_name}</TableCell>
+                    <TableCell>{formatValue(item.quantity)}</TableCell>
+                    <TableCell>
+                      {item.price === null || item.price === undefined
+                        ? "—"
+                        : formatCurrency(item.price)}
+                    </TableCell>
+                    <TableCell className="text-center">{item.is_bonus ? "Да" : "Нет"}</TableCell>
+                    <TableCell>{formatCurrency(item.line_total)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Всего: {formatValue(data.total_quantity)} шт.</p>
+            <p>Сумма: {formatCurrency(data.total_amount)}</p>
+          </div>
+        </div>
+      );
+    }
+
+    if (detail.type === "return_to_main") {
+      const data = detail.data;
+      const total = getTotalQuantity(data.items);
+      return (
+        <div className="space-y-4">
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Дата: {formatDateTime(data.created_at)}</p>
+            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Товар</TableHead>
+                  <TableHead className="w-24">Кол-во</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.items.map((item) => (
+                  <TableRow key={item.product_id}>
+                    <TableCell>{item.product_name}</TableCell>
+                    <TableCell>{formatValue(item.quantity)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="text-sm text-muted-foreground">Всего: {formatValue(total)} шт.</div>
+        </div>
+      );
+    }
+
+    const data = detail.data;
+    const total = getTotalQuantity(data.items);
+    return (
+      <div className="space-y-4">
+        <div className="text-sm text-muted-foreground space-y-1">
+          <p>Магазин: {data.shop_name}</p>
+          <p>Дата: {formatDateTime(data.created_at)}</p>
+          {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+        </div>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Товар</TableHead>
+                <TableHead className="w-24">Кол-во</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.items.map((item) => (
+                <TableRow key={item.product_id}>
+                  <TableCell>{item.product_name}</TableCell>
+                  <TableCell>{formatValue(item.quantity)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="text-sm text-muted-foreground">Всего: {formatValue(total)} шт.</div>
+      </div>
+    );
+  };
+
+  const detailTitle = (() => {
+    if (currentDetailType === "delivery") return "Детали выдачи";
+    if (currentDetailType === "return_to_main") return "Детали возврата в главный склад";
+    if (currentDetailType === "return_from_shop") return "Детали возврата из магазина";
+    return "Детали";
+  })();
 
   return (
     <div className="space-y-6">
@@ -257,19 +493,29 @@ export default function AdminReports() {
           ) : (
             <>
               <div className="space-y-3 md:hidden">
-                {movementData.map((row) => (
-                  <div key={`${row.type}-${row.id}`} className="rounded-lg border p-4 space-y-2 bg-card">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-semibold leading-tight">{renderShopName(row)}</p>
-                        <p className="text-xs text-muted-foreground">{renderTime(row.time)}</p>
+                {movementData.map((row) => {
+                  const rowKey = `${row.type}-${row.id}`;
+                  const isRowLoading = activeRowKey === rowKey && detailLoading;
+                  return (
+                    <div key={rowKey} className="rounded-lg border p-4 space-y-2 bg-card">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold leading-tight">{renderShopName(row)}</p>
+                          <p className="text-xs text-muted-foreground">{renderTime(row.time)}</p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Подробнее"
+                          onClick={() => handleViewDetails(row)}
+                          disabled={isRowLoading}
+                        >
+                          {isRowLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                        </Button>
                       </div>
-                      <Button variant="ghost" size="icon" aria-label="Подробнее">
-                        <Eye className="h-4 w-4" />
-                      </Button>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="hidden md:block overflow-x-auto">
@@ -282,17 +528,31 @@ export default function AdminReports() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {movementData.map((row) => (
-                      <TableRow key={`${row.type}-${row.id}`}>
-                        <TableCell>{renderShopName(row)}</TableCell>
-                        <TableCell>{renderTime(row.time)}</TableCell>
-                        <TableCell className="text-right">
-                          <Button variant="ghost" size="icon" aria-label="Подробнее">
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {movementData.map((row) => {
+                      const rowKey = `${row.type}-${row.id}`;
+                      const isRowLoading = activeRowKey === rowKey && detailLoading;
+                      return (
+                        <TableRow key={rowKey}>
+                          <TableCell>{renderShopName(row)}</TableCell>
+                          <TableCell>{renderTime(row.time)}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Подробнее"
+                              onClick={() => handleViewDetails(row)}
+                              disabled={isRowLoading}
+                            >
+                              {isRowLoading ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -300,6 +560,15 @@ export default function AdminReports() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={detailOpen} onOpenChange={handleDetailOpenChange}>
+        <DialogContent className="w-full max-w-[90vw] sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{detailTitle}</DialogTitle>
+          </DialogHeader>
+          {renderDetailContent()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

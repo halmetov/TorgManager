@@ -258,6 +258,10 @@ class ApiClient {
     return this.get('/shop-orders');
   }
 
+  async getShopOrderDetail(id: number) {
+    return this.get(`/shop-orders/${id}`);
+  }
+
   // Manager stock
   async getManagerStock() {
     return this.get('/manager/stock');
@@ -284,12 +288,20 @@ class ApiClient {
     return this.get('/shop-returns');
   }
 
+  async getShopReturnDetail(id: number) {
+    return this.get(`/shop-returns/${id}`);
+  }
+
   async createManagerReturn(data: { items: { product_id: number; quantity: number }[] }) {
     return this.post('/manager-returns', data);
   }
 
   async getManagerReturns() {
     return this.get('/manager-returns');
+  }
+
+  async getManagerReturnDetail(id: number) {
+    return this.get(`/manager-returns/${id}`);
   }
 
   // Manager Products
@@ -321,6 +333,14 @@ class ApiClient {
     params.set('manager_id', String(managerId));
     params.set('date', date);
     return this.get(`/reports/admin/daily?${params.toString()}`);
+  }
+
+  async getAdminShopPeriodReport(shopId: number, dateFrom: string, dateTo: string) {
+    const params = new URLSearchParams();
+    params.set('shop_id', String(shopId));
+    params.set('date_from', dateFrom);
+    params.set('date_to', dateTo);
+    return this.get(`/reports/admin/shop-period?${params.toString()}`);
   }
 }
 export const api = new ApiClient(API_BASE_URL);

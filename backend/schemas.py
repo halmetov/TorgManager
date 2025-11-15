@@ -198,6 +198,7 @@ class ShopOrderItemCreate(BaseModel):
     product_id: int
     quantity: condecimal(gt=0)
     price: Optional[condecimal(ge=0)] = None
+    is_bonus: bool = False
 
 
 class ShopOrderPaymentData(BaseModel):
@@ -215,6 +216,7 @@ class ShopOrderItemOut(BaseModel):
     product_name: str
     quantity: float
     price: Optional[float] = None
+    is_bonus: bool
 
 
 class ShopOrderPaymentOut(BaseModel):
@@ -231,6 +233,57 @@ class ShopOrderOut(BaseModel):
     created_at: datetime
     items: List[ShopOrderItemOut]
     payment: Optional[ShopOrderPaymentOut] = None
+
+
+class ShopOrderDetailItem(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: Decimal
+    price: Optional[Decimal] = None
+    line_total: Decimal
+    is_bonus: bool
+
+
+class ShopOrderDetail(BaseModel):
+    id: int
+    manager_id: int
+    manager_name: str
+    shop_id: int
+    shop_name: str
+    created_at: datetime
+    total_quantity: Decimal
+    total_amount: Decimal
+    items: List[ShopOrderDetailItem]
+
+
+class ManagerReturnDetailItem(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: Decimal
+
+
+class ManagerReturnDetail(BaseModel):
+    id: int
+    manager_id: int
+    manager_name: str
+    created_at: datetime
+    items: List[ManagerReturnDetailItem]
+
+
+class ShopReturnDetailItem(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: Decimal
+
+
+class ShopReturnDetail(BaseModel):
+    id: int
+    manager_id: int
+    manager_name: str
+    shop_id: int
+    shop_name: str
+    created_at: datetime
+    items: List[ShopReturnDetailItem]
 
 
 class ShopReturnItemCreate(BaseModel):
@@ -310,3 +363,17 @@ class ManagerDailyReport(BaseModel):
 class AdminDailyReport(ManagerDailyReport):
     manager_id: int
     manager_name: str
+
+
+class AdminShopPeriodSummary(BaseModel):
+    issued_total: Decimal
+    returns_total: Decimal
+    bonuses_total: Decimal
+
+
+class AdminShopPeriodReport(BaseModel):
+    shop_id: int
+    shop_name: str
+    date_from: date
+    date_to: date
+    summary: AdminShopPeriodSummary

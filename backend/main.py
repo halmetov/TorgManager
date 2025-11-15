@@ -11,7 +11,7 @@ import secrets
 import models
 import schemas
 from database import engine, get_db
-from sqlalchemy import inspect, text, bindparam, func
+from sqlalchemy import inspect, text, bindparam, func, literal
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from passlib.context import CryptContext
 import jwt
@@ -97,6 +97,32 @@ def ensure_incoming_tables():
 
 ensure_dispatch_columns()
 ensure_incoming_tables()
+
+
+def ensure_shop_order_item_columns():
+    inspector = inspect(engine)
+    try:
+        columns = {column["name"] for column in inspector.get_columns("shop_order_items")}
+    except Exception:
+        return
+
+    if "is_bonus" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE shop_order_items "
+                    "ADD COLUMN IF NOT EXISTS is_bonus BOOLEAN DEFAULT FALSE"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE shop_order_items SET is_bonus = FALSE "
+                    "WHERE is_bonus IS NULL"
+                )
+            )
+
+
+ensure_shop_order_item_columns()
 
 
 def ensure_return_tables():
@@ -1030,6 +1056,7 @@ def _fetch_shop_orders(
                         "product_name": item.product.name if item.product else "",
                         "quantity": _to_float(item.quantity),
                         "price": _to_optional_float(item.price),
+                        "is_bonus": bool(item.is_bonus),
                     }
                     for item in items
                 ],
@@ -1115,11 +1142,14 @@ def _build_manager_daily_report(
 
     start, end = _get_day_bounds(report_date)
 
+    dispatch_status = func.coalesce(models.Dispatch.status, literal("pending"))
+    dispatch_timestamp = func.coalesce(models.Dispatch.accepted_at, models.Dispatch.created_at)
+
     received_total_raw = (
         db.query(func.coalesce(func.sum(models.Dispatch.quantity), 0))
         .filter(models.Dispatch.manager_id == manager.id)
-        .filter(models.Dispatch.created_at >= start, models.Dispatch.created_at < end)
-        .filter(text("COALESCE(dispatches.status, 'sent') IN ('sent','accepted')"))
+        .filter(dispatch_status.in_(("sent", "accepted")))
+        .filter(dispatch_timestamp >= start, dispatch_timestamp < end)
         .scalar()
         or 0
     )
@@ -1661,6 +1691,70 @@ def get_admin_daily_report(
     )
 
 
+@app.get("/reports/admin/shop-period", response_model=schemas.AdminShopPeriodReport)
+def get_admin_shop_period_report(
+    shop_id: int = Query(...),
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can view this report")
+
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="Некорректный период")
+
+    shop = db.query(models.Shop).filter(models.Shop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+
+    range_start = datetime.combine(date_from, time_type.min)
+    range_end = datetime.combine(date_to, time_type.min) + timedelta(days=1)
+
+    issued_total_raw = (
+        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .scalar()
+        or 0
+    )
+
+    returns_total_raw = (
+        db.query(func.coalesce(func.sum(models.ShopReturnItem.quantity), 0))
+        .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .filter(models.ShopReturn.shop_id == shop_id)
+        .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
+        .scalar()
+        or 0
+    )
+
+    bonuses_total_raw = (
+        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .filter(models.ShopOrderItem.is_bonus.is_(True))
+        .scalar()
+        or 0
+    )
+
+    summary = schemas.AdminShopPeriodSummary(
+        issued_total=_to_decimal(issued_total_raw),
+        returns_total=_to_decimal(returns_total_raw),
+        bonuses_total=_to_decimal(bonuses_total_raw),
+    )
+
+    return schemas.AdminShopPeriodReport(
+        shop_id=shop.id,
+        shop_name=shop.name,
+        date_from=date_from,
+        date_to=date_to,
+        summary=summary,
+    )
+
+
 # Reports endpoints
 @app.get("/reports/products")
 def get_product_report(
@@ -1912,21 +2006,30 @@ def create_shop_order(
     if not order.items:
         raise HTTPException(status_code=400, detail="Необходимо указать товары")
 
-    aggregated: Dict[int, Dict[str, Any]] = {}
+    totals_by_product: Dict[int, int] = {}
+    line_items: List[Dict[str, Any]] = []
     for item in order.items:
         quantity_value = int(item.quantity)
         if quantity_value <= 0:
             raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
 
-        price_value = Decimal(item.price) if item.price is not None else None
-        entry = aggregated.setdefault(
-            item.product_id, {"quantity": 0, "price": price_value}
-        )
-        entry["quantity"] += quantity_value
-        if price_value is not None:
-            entry["price"] = price_value
+        price_value: Optional[Decimal] = None
+        if item.price is not None:
+            price_value = Decimal(item.price)
+            if price_value < 0:
+                raise HTTPException(status_code=400, detail="Цена не может быть отрицательной")
 
-    product_ids = list(aggregated.keys())
+        totals_by_product[item.product_id] = totals_by_product.get(item.product_id, 0) + quantity_value
+        line_items.append(
+            {
+                "product_id": item.product_id,
+                "quantity": quantity_value,
+                "price": price_value,
+                "is_bonus": bool(getattr(item, "is_bonus", False)),
+            }
+        )
+
+    product_ids = list(totals_by_product.keys())
     archived_column = getattr(models.Product, "is_archived", None)
 
     products_query = db.query(models.Product).filter(
@@ -1948,9 +2051,8 @@ def create_shop_order(
         )
 
     insufficient: List[Dict[str, Any]] = []
-    for product_id, data in aggregated.items():
+    for product_id, requested in totals_by_product.items():
         available = manager_map[product_id].quantity or 0
-        requested = data["quantity"]
         if requested > available:
             insufficient.append(
                 {
@@ -1978,23 +2080,25 @@ def create_shop_order(
         db.add(order_row)
         db.flush()
 
-        for product_id, data in aggregated.items():
+        for product_id, requested in totals_by_product.items():
             product = manager_map[product_id]
-            requested = data["quantity"]
-            fallback_price = Decimal(str(product.price or 0))
-            price_decimal = data["price"] if data["price"] is not None else fallback_price
-
             product.quantity = (product.quantity or 0) - requested
 
-            line_total = Decimal(str(requested)) * price_decimal
+        for item_data in line_items:
+            product = manager_map[item_data["product_id"]]
+            fallback_price = Decimal(str(product.price or 0))
+            price_decimal = item_data["price"] if item_data["price"] is not None else fallback_price
+
+            line_total = Decimal(str(item_data["quantity"])) * price_decimal
             total_amount += line_total
 
             db.add(
                 models.ShopOrderItem(
                     order_id=order_row.id,
-                    product_id=product_id,
-                    quantity=requested,
+                    product_id=item_data["product_id"],
+                    quantity=item_data["quantity"],
                     price=price_decimal,
+                    is_bonus=item_data["is_bonus"],
                 )
             )
 
@@ -2031,6 +2135,72 @@ def create_shop_order(
         raise HTTPException(status_code=500, detail="Не удалось получить созданный заказ")
 
     return created_orders[0]
+
+
+@app.get("/shop-orders/{order_id}", response_model=schemas.ShopOrderDetail)
+def get_shop_order_detail(
+    order_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    order = (
+        db.query(models.ShopOrder)
+        .options(
+            joinedload(models.ShopOrder.items).joinedload(models.ShopOrderItem.product),
+            joinedload(models.ShopOrder.shop),
+            joinedload(models.ShopOrder.manager),
+        )
+        .filter(models.ShopOrder.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+
+    if current_user.role == "manager" and order.manager_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра заказа")
+
+    sorted_items = sorted(order.items, key=lambda item: item.id)
+    total_quantity = Decimal("0")
+    total_amount = Decimal("0")
+    items: List[Dict[str, Any]] = []
+
+    for item in sorted_items:
+        quantity_decimal = Decimal(str(item.quantity))
+        price_decimal = Decimal(str(item.price)) if item.price is not None else None
+        line_total = quantity_decimal * (price_decimal or Decimal("0"))
+        total_quantity += quantity_decimal
+        total_amount += line_total
+
+        items.append(
+            {
+                "product_id": item.product_id,
+                "product_name": item.product.name if item.product else "",
+                "quantity": quantity_decimal,
+                "price": price_decimal,
+                "line_total": line_total,
+                "is_bonus": bool(item.is_bonus),
+            }
+        )
+
+    manager_name = ""
+    if order.manager:
+        manager_name = order.manager.full_name or order.manager.username or ""
+
+    return schemas.ShopOrderDetail(
+        id=order.id,
+        manager_id=order.manager_id,
+        manager_name=manager_name,
+        shop_id=order.shop_id,
+        shop_name=order.shop.name if order.shop else "",
+        created_at=order.created_at,
+        total_quantity=total_quantity,
+        total_amount=total_amount,
+        items=items,
+    )
 
 
 @app.get("/shop-orders", response_model=List[schemas.ShopOrderOut])
@@ -2126,6 +2296,59 @@ def create_shop_return(
         raise HTTPException(status_code=500, detail="Не удалось получить созданный возврат")
 
     return created_returns[0]
+
+
+@app.get("/shop-returns/{return_id}", response_model=schemas.ShopReturnDetail)
+def get_shop_return_detail(
+    return_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    return_doc = (
+        db.query(models.ShopReturn)
+        .options(
+            joinedload(models.ShopReturn.items).joinedload(models.ShopReturnItem.product),
+            joinedload(models.ShopReturn.shop),
+            joinedload(models.ShopReturn.manager),
+        )
+        .filter(models.ShopReturn.id == return_id)
+        .first()
+    )
+
+    if not return_doc:
+        raise HTTPException(status_code=404, detail="Возврат не найден")
+
+    if current_user.role == "manager" and return_doc.manager_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра возврата")
+
+    sorted_items = sorted(return_doc.items, key=lambda item: item.id)
+    items: List[Dict[str, Any]] = []
+    for item in sorted_items:
+        quantity_decimal = Decimal(str(item.quantity))
+        items.append(
+            {
+                "product_id": item.product_id,
+                "product_name": item.product.name if item.product else "",
+                "quantity": quantity_decimal,
+            }
+        )
+
+    manager_name = ""
+    if return_doc.manager:
+        manager_name = return_doc.manager.full_name or return_doc.manager.username or ""
+
+    return schemas.ShopReturnDetail(
+        id=return_doc.id,
+        manager_id=return_doc.manager_id,
+        manager_name=manager_name,
+        shop_id=return_doc.shop_id,
+        shop_name=return_doc.shop.name if return_doc.shop else "",
+        created_at=return_doc.created_at,
+        items=items,
+    )
 
 
 @app.get("/shop-returns", response_model=List[schemas.ShopReturnOut])
@@ -2250,6 +2473,56 @@ def create_manager_return(
         raise
 
     return schemas.ManagerReturnCreated(id=return_row.id, created_at=return_row.created_at)
+
+
+@app.get("/manager-returns/{return_id}", response_model=schemas.ManagerReturnDetail)
+def get_manager_return_detail(
+    return_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    return_doc = (
+        db.query(models.ManagerReturn)
+        .options(
+            joinedload(models.ManagerReturn.items).joinedload(models.ManagerReturnItem.product),
+            joinedload(models.ManagerReturn.manager),
+        )
+        .filter(models.ManagerReturn.id == return_id)
+        .first()
+    )
+
+    if not return_doc:
+        raise HTTPException(status_code=404, detail="Возврат не найден")
+
+    if current_user.role == "manager" and return_doc.manager_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра возврата")
+
+    sorted_items = sorted(return_doc.items, key=lambda item: item.id)
+    items: List[Dict[str, Any]] = []
+    for item in sorted_items:
+        quantity_decimal = Decimal(str(item.quantity))
+        items.append(
+            {
+                "product_id": item.product_id,
+                "product_name": item.product.name if item.product else "",
+                "quantity": quantity_decimal,
+            }
+        )
+
+    manager_name = ""
+    if return_doc.manager:
+        manager_name = return_doc.manager.full_name or return_doc.manager.username or ""
+
+    return schemas.ManagerReturnDetail(
+        id=return_doc.id,
+        manager_id=return_doc.manager_id,
+        manager_name=manager_name,
+        created_at=return_doc.created_at,
+        items=items,
+    )
 
 
 @app.get("/manager-returns", response_model=List[schemas.ManagerReturnOut])
