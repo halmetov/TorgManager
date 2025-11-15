@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
@@ -45,6 +46,7 @@ interface ShopOrderItem {
   product_name: string;
   quantity: number;
   price?: number | null;
+  is_bonus: boolean;
 }
 
 interface ShopOrderPayment {
@@ -68,11 +70,12 @@ interface OrderFormItem {
   product_name: string;
   quantity: string;
   price: string;
+  is_bonus: boolean;
 }
 
 interface ShopOrderCreatePayload {
   shop_id: number;
-  items: { product_id: number; quantity: number; price?: number | null }[];
+  items: { product_id: number; quantity: number; price?: number | null; is_bonus: boolean }[];
   payment?: { paid_amount: number } | null;
 }
 
@@ -236,6 +239,7 @@ export default function ManagerOrders() {
           product_name: selectedProduct.name,
           quantity: String(quantityValue),
           price: priceNumber === null ? "" : String(priceNumber),
+          is_bonus: false,
         },
       ];
     });
@@ -249,6 +253,12 @@ export default function ManagerOrders() {
 
   const handlePriceChange = (productId: number, value: string) => {
     setItems((current) => current.map((item) => (item.product_id === productId ? { ...item, price: value } : item)));
+  };
+
+  const handleBonusToggle = (productId: number, checked: boolean) => {
+    setItems((current) =>
+      current.map((item) => (item.product_id === productId ? { ...item, is_bonus: checked } : item))
+    );
   };
 
   const handleRemoveItem = (productId: number) => {
@@ -334,26 +344,18 @@ export default function ManagerOrders() {
       }
     }
 
-    const aggregated = new Map<number, { product_id: number; quantity: number; price?: number | null }>();
-    for (const item of items) {
-      const productId = item.product_id;
+    const payloadItems = items.map((item) => {
       const quantityNumber = Number(item.quantity.trim());
       const priceValue = item.price.trim() === "" ? null : Number(item.price.trim());
-      const existing = aggregated.get(productId);
-      if (existing) {
-        existing.quantity += quantityNumber;
-        existing.price = priceValue ?? existing.price ?? null;
-      } else {
-        aggregated.set(productId, {
-          product_id: productId,
-          quantity: quantityNumber,
-          price: priceValue,
-        });
-      }
-    }
+      return {
+        product_id: item.product_id,
+        quantity: quantityNumber,
+        price: priceValue,
+        is_bonus: item.is_bonus,
+      };
+    });
 
-    const aggregatedItems = Array.from(aggregated.values());
-    const computedTotal = aggregatedItems.reduce((sum, item) => {
+    const computedTotal = payloadItems.reduce((sum, item) => {
       const product = stockMap.get(item.product_id);
       const price = item.price ?? product?.price ?? 0;
       return sum + item.quantity * (price ?? 0);
@@ -361,7 +363,7 @@ export default function ManagerOrders() {
 
     setPendingOrderPayload({
       shop_id: Number(shopId),
-      items: aggregatedItems,
+      items: payloadItems,
     });
     setPendingTotalAmount(computedTotal);
     setPaidAmountInput(computedTotal ? computedTotal.toFixed(2) : "0");
@@ -567,18 +569,19 @@ export default function ManagerOrders() {
                     <TableHead className="w-28">Доступно</TableHead>
                     <TableHead className="w-28">Количество</TableHead>
                     <TableHead className="w-32">Цена</TableHead>
-                    <TableHead className="w-12" />
+                  <TableHead className="w-24 text-center">Бонус</TableHead>
+                  <TableHead className="w-12" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                      Товары не выбраны
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="text-center text-muted-foreground">
-                        Товары не выбраны
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    items.map((item) => {
+                ) : (
+                  items.map((item) => {
                       const stockItem = stockMap.get(item.product_id);
                       return (
                         <TableRow key={item.product_id}>
@@ -600,6 +603,15 @@ export default function ManagerOrders() {
                               value={item.price}
                               placeholder="—"
                               onChange={(event) => handlePriceChange(item.product_id, event.target.value)}
+                            />
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Checkbox
+                              checked={item.is_bonus}
+                              onCheckedChange={(checked) =>
+                                handleBonusToggle(item.product_id, checked === true)
+                              }
+                              aria-label={`Пометить ${item.product_name} как бонус`}
                             />
                           </TableCell>
                           <TableCell className="text-right">
@@ -651,6 +663,16 @@ export default function ManagerOrders() {
                             placeholder="—"
                             onChange={(event) => handlePriceChange(item.product_id, event.target.value)}
                           />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            checked={item.is_bonus}
+                            onCheckedChange={(checked) =>
+                              handleBonusToggle(item.product_id, checked === true)
+                            }
+                            aria-label={`Пометить ${item.product_name} как бонус`}
+                          />
+                          <span className="text-sm">Бонус</span>
                         </div>
                       </div>
                       <div className="flex justify-end">
@@ -778,6 +800,7 @@ export default function ManagerOrders() {
                       <TableHead>Товар</TableHead>
                       <TableHead className="w-32">Количество</TableHead>
                       <TableHead className="w-32">Цена</TableHead>
+                      <TableHead className="w-24 text-center">Бонус</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -786,6 +809,7 @@ export default function ManagerOrders() {
                         <TableCell>{item.product_name}</TableCell>
                         <TableCell>{item.quantity}</TableCell>
                         <TableCell>{item.price ?? "—"}</TableCell>
+                        <TableCell className="text-center">{item.is_bonus ? "Да" : "Нет"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

@@ -1,4 +1,14 @@
-import { Package, Store, Users, Truck, RotateCcw, FileText, LogOut, ArrowDownToLine } from "lucide-react";
+import {
+  Package,
+  Store,
+  Users,
+  Truck,
+  RotateCcw,
+  FileText,
+  LogOut,
+  ArrowDownToLine,
+  BarChart3,
+} from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Sidebar,
@@ -23,6 +33,7 @@ const items = [
   { title: "Отправка", url: "/admin/dispatch", icon: Truck },
   { title: "Возврат", url: "/admin/returns", icon: RotateCcw },
   { title: "Отчеты", url: "/admin/reports", icon: FileText },
+  { title: "Отчёт по магазинам", url: "/admin/shop-reports", icon: BarChart3 },
 ];
 
 export function AdminSidebar() {

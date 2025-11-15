@@ -43,13 +43,15 @@ class Shop(Base):
 
 class Dispatch(Base):
     __tablename__ = "dispatches"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     manager_id = Column(Integer, ForeignKey("users.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer)
     price = Column(Float)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    status = Column(String, default="pending")
+    accepted_at = Column(DateTime, nullable=True)
     
     manager = relationship("User")
     product = relationship("Product")
@@ -136,6 +138,7 @@ class ShopOrderItem(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Numeric, nullable=False)
     price = Column(Numeric, nullable=True)
+    is_bonus = Column(Boolean, nullable=False, default=False)
 
     order = relationship("ShopOrder", back_populates="items")
     product = relationship("Product")

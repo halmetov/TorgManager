@@ -434,61 +434,103 @@ export default function ManagerProducts() {
           </Button>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">№</TableHead>
-                <TableHead>Товар</TableHead>
-                <TableHead>Количество</TableHead>
-                <TableHead>Статус</TableHead>
-                <TableHead>Создано</TableHead>
-                <TableHead>Принято</TableHead>
-                <TableHead className="w-32 text-right">Действия</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {dispatchesLoading ? (
+          <div className="space-y-3 md:hidden">
+            {dispatchesLoading ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
+            ) : dispatches.length === 0 ? (
+              <div className="rounded-lg border p-4 text-center text-muted-foreground">Отправок пока нет</div>
+            ) : (
+              dispatches.map((dispatch) => {
+                const isPending = dispatch.status === "pending";
+                return (
+                  <div key={dispatch.id} className="rounded-lg border p-4 space-y-3 bg-card">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold leading-tight">{dispatch.product_name}</p>
+                        <p className="text-xs text-muted-foreground">Количество: {dispatch.quantity}</p>
+                      </div>
+                      <span className="text-sm text-muted-foreground">#{dispatch.id}</span>
+                    </div>
+                    <div className="grid gap-1 text-sm text-muted-foreground">
+                      <span>Статус: {isPending ? "в ожидании" : "отправлен"}</span>
+                      <span>Создано: {formatDate(dispatch.created_at)}</span>
+                      <span>
+                        Принято: {dispatch.status === "sent" ? formatDate(dispatch.accepted_at) : "—"}
+                      </span>
+                    </div>
+                    {isPending ? (
+                      <Button
+                        size="sm"
+                        className="w-full sm:w-auto"
+                        onClick={() => acceptMutation.mutate(dispatch.id)}
+                        disabled={acceptMutation.isPending}
+                      >
+                        Принять
+                      </Button>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
-                    Загрузка...
-                  </TableCell>
+                  <TableHead className="w-12">№</TableHead>
+                  <TableHead>Товар</TableHead>
+                  <TableHead>Количество</TableHead>
+                  <TableHead>Статус</TableHead>
+                  <TableHead>Создано</TableHead>
+                  <TableHead>Принято</TableHead>
+                  <TableHead className="w-32 text-right">Действия</TableHead>
                 </TableRow>
-              ) : dispatches.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
-                    Отправок пока нет
-                  </TableCell>
-                </TableRow>
-              ) : (
-                dispatches.map((dispatch) => {
-                  const isPending = dispatch.status === "pending";
-                  return (
-                    <TableRow key={dispatch.id}>
-                      <TableCell>{dispatch.id}</TableCell>
-                      <TableCell>{dispatch.product_name}</TableCell>
-                      <TableCell>{dispatch.quantity}</TableCell>
-                      <TableCell>{isPending ? "в ожидании" : "отправлен"}</TableCell>
-                      <TableCell>{formatDate(dispatch.created_at)}</TableCell>
-                      <TableCell>{dispatch.status === "sent" ? formatDate(dispatch.accepted_at) : "—"}</TableCell>
-                      <TableCell className="text-right">
-                        {isPending ? (
-                          <Button
-                            size="sm"
-                            onClick={() => acceptMutation.mutate(dispatch.id)}
-                            disabled={acceptMutation.isPending}
-                          >
-                            Принять
-                          </Button>
-                        ) : (
-                          "—"
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {dispatchesLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                      Загрузка...
+                    </TableCell>
+                  </TableRow>
+                ) : dispatches.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                      Отправок пока нет
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  dispatches.map((dispatch) => {
+                    const isPending = dispatch.status === "pending";
+                    return (
+                      <TableRow key={dispatch.id}>
+                        <TableCell>{dispatch.id}</TableCell>
+                        <TableCell>{dispatch.product_name}</TableCell>
+                        <TableCell>{dispatch.quantity}</TableCell>
+                        <TableCell>{isPending ? "в ожидании" : "отправлен"}</TableCell>
+                        <TableCell>{formatDate(dispatch.created_at)}</TableCell>
+                        <TableCell>{dispatch.status === "sent" ? formatDate(dispatch.accepted_at) : "—"}</TableCell>
+                        <TableCell className="text-right">
+                          {isPending ? (
+                            <Button
+                              size="sm"
+                              onClick={() => acceptMutation.mutate(dispatch.id)}
+                              disabled={acceptMutation.isPending}
+                            >
+                              Принять
+                            </Button>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
