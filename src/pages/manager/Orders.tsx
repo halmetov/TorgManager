@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -50,7 +50,9 @@ interface ShopOrderItem {
 }
 
 interface ShopOrderPayment {
-  total_amount: number;
+  total_goods_amount: number;
+  returns_amount: number;
+  payable_amount: number;
   paid_amount: number;
   debt_amount: number;
 }
@@ -75,8 +77,9 @@ interface OrderFormItem {
 
 interface ShopOrderCreatePayload {
   shop_id: number;
+  returns: { amount: number };
   items: { product_id: number; quantity: number; price?: number | null; is_bonus: boolean }[];
-  payment?: { paid_amount: number } | null;
+  paid_amount: number;
 }
 
 const currencyFormatter = new Intl.NumberFormat("ru-RU", {
@@ -93,15 +96,23 @@ export default function ManagerOrders() {
 
   const [shopId, setShopId] = useState("");
   const [items, setItems] = useState<OrderFormItem[]>([]);
+  const [returnsAmountInput, setReturnsAmountInput] = useState("0");
   const [productSearch, setProductSearch] = useState("");
   const [productOpen, setProductOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ManagerStockItem | null>(null);
   const [quantityInput, setQuantityInput] = useState("");
   const [priceInput, setPriceInput] = useState("");
+  const [bonusProductSearch, setBonusProductSearch] = useState("");
+  const [bonusProductOpen, setBonusProductOpen] = useState(false);
+  const [bonusSelectedProduct, setBonusSelectedProduct] = useState<ManagerStockItem | null>(null);
+  const [bonusQuantityInput, setBonusQuantityInput] = useState("");
+  const [bonusPriceInput, setBonusPriceInput] = useState("");
   const [detailOrder, setDetailOrder] = useState<ShopOrder | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [pendingOrderPayload, setPendingOrderPayload] = useState<ShopOrderCreatePayload | null>(null);
-  const [pendingTotalAmount, setPendingTotalAmount] = useState(0);
+  const [pendingSummary, setPendingSummary] = useState<
+    { totalGoodsAmount: number; returnsAmount: number; payableAmount: number } | null
+  >(null);
   const [paidAmountInput, setPaidAmountInput] = useState("");
   const [paymentError, setPaymentError] = useState<string | null>(null);
 
@@ -174,7 +185,13 @@ export default function ManagerOrders() {
     return availableProducts.filter((product) => product.name.toLowerCase().includes(term));
   }, [availableProducts, productSearch]);
 
-  const resetProductSelection = () => {
+  const filteredBonusProducts = useMemo(() => {
+    const term = bonusProductSearch.trim().toLowerCase();
+    if (!term) return availableProducts;
+    return availableProducts.filter((product) => product.name.toLowerCase().includes(term));
+  }, [availableProducts, bonusProductSearch]);
+
+  const resetGoodsSelection = () => {
     setSelectedProduct(null);
     setQuantityInput("");
     setPriceInput("");
@@ -182,14 +199,29 @@ export default function ManagerOrders() {
     setProductOpen(false);
   };
 
-  const handleSelectProduct = (product: ManagerStockItem) => {
+  const resetBonusSelection = () => {
+    setBonusSelectedProduct(null);
+    setBonusQuantityInput("");
+    setBonusPriceInput("");
+    setBonusProductSearch("");
+    setBonusProductOpen(false);
+  };
+
+  const handleSelectGoodsProduct = (product: ManagerStockItem) => {
     setSelectedProduct(product);
     setProductSearch(product.name);
     setPriceInput(product.price != null ? String(product.price) : "");
     setProductOpen(false);
   };
 
-  const addItem = () => {
+  const handleSelectBonusProduct = (product: ManagerStockItem) => {
+    setBonusSelectedProduct(product);
+    setBonusProductSearch(product.name);
+    setBonusPriceInput(product.price != null ? String(product.price) : "");
+    setBonusProductOpen(false);
+  };
+
+  const addGoodsItem = () => {
     if (!selectedProduct) {
       toast({ title: "Ошибка", description: "Выберите товар", variant: "destructive" });
       return;
@@ -202,12 +234,18 @@ export default function ManagerOrders() {
     }
 
     const available = selectedProduct.quantity;
-    const existing = items.find((item) => item.product_id === selectedProduct.product_id);
-    const alreadyRequested = existing ? Number(existing.quantity) : 0;
-    if (quantityValue + alreadyRequested > available) {
+    const existingGoods = items.find(
+      (item) => item.product_id === selectedProduct.product_id && item.is_bonus === false
+    );
+    const existingBonus = items.find(
+      (item) => item.product_id === selectedProduct.product_id && item.is_bonus === true
+    );
+    const goodsQuantity = existingGoods ? Number(existingGoods.quantity) : 0;
+    const bonusQuantity = existingBonus ? Number(existingBonus.quantity) : 0;
+    if (goodsQuantity + bonusQuantity + quantityValue > available) {
       toast({
         title: "Недостаточно товара",
-        description: `${selectedProduct.name}: доступно ${available}, пытаетесь выдать ${quantityValue + alreadyRequested}`,
+        description: `${selectedProduct.name}: доступно ${available}, пытаетесь выдать ${goodsQuantity + bonusQuantity + quantityValue}`,
         variant: "destructive",
       });
       return;
@@ -221,7 +259,9 @@ export default function ManagerOrders() {
     }
 
     setItems((current) => {
-      const index = current.findIndex((item) => item.product_id === selectedProduct.product_id);
+      const index = current.findIndex(
+        (item) => item.product_id === selectedProduct.product_id && item.is_bonus === false
+      );
       if (index >= 0) {
         const next = [...current];
         next[index] = {
@@ -244,26 +284,166 @@ export default function ManagerOrders() {
       ];
     });
 
-    resetProductSelection();
+    resetGoodsSelection();
   };
 
-  const handleQuantityChange = (productId: number, value: string) => {
-    setItems((current) => current.map((item) => (item.product_id === productId ? { ...item, quantity: value } : item)));
+  const addBonusItem = () => {
+    if (!bonusSelectedProduct) {
+      toast({ title: "Ошибка", description: "Выберите бонусный товар", variant: "destructive" });
+      return;
+    }
+
+    const quantityValue = Number(bonusQuantityInput.trim());
+    if (!bonusQuantityInput.trim() || Number.isNaN(quantityValue) || quantityValue <= 0) {
+      toast({ title: "Ошибка", description: "Количество должно быть больше нуля", variant: "destructive" });
+      return;
+    }
+
+    const available = bonusSelectedProduct.quantity;
+    const existingGoods = items.find(
+      (item) => item.product_id === bonusSelectedProduct.product_id && item.is_bonus === false
+    );
+    const existingBonus = items.find(
+      (item) => item.product_id === bonusSelectedProduct.product_id && item.is_bonus === true
+    );
+    const goodsQuantity = existingGoods ? Number(existingGoods.quantity) : 0;
+    const bonusQuantity = existingBonus ? Number(existingBonus.quantity) : 0;
+    if (goodsQuantity + bonusQuantity + quantityValue > available) {
+      toast({
+        title: "Недостаточно товара",
+        description: `${bonusSelectedProduct.name}: доступно ${available}, пытаетесь выдать ${goodsQuantity + bonusQuantity + quantityValue}`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const priceValue = bonusPriceInput.trim();
+    const priceNumber = priceValue === "" ? null : Number(priceValue);
+    if (priceValue !== "" && (Number.isNaN(priceNumber) || priceNumber < 0)) {
+      toast({ title: "Ошибка", description: "Цена должна быть неотрицательной", variant: "destructive" });
+      return;
+    }
+
+    setItems((current) => {
+      const index = current.findIndex(
+        (item) => item.product_id === bonusSelectedProduct.product_id && item.is_bonus === true
+      );
+      if (index >= 0) {
+        const next = [...current];
+        next[index] = {
+          ...next[index],
+          quantity: String(Number(next[index].quantity) + quantityValue),
+          price: priceNumber === null ? next[index].price : String(priceNumber),
+        };
+        return next;
+      }
+
+      return [
+        ...current,
+        {
+          product_id: bonusSelectedProduct.product_id,
+          product_name: bonusSelectedProduct.name,
+          quantity: String(quantityValue),
+          price: priceNumber === null ? "" : String(priceNumber),
+          is_bonus: true,
+        },
+      ];
+    });
+
+    resetBonusSelection();
   };
 
-  const handlePriceChange = (productId: number, value: string) => {
-    setItems((current) => current.map((item) => (item.product_id === productId ? { ...item, price: value } : item)));
-  };
-
-  const handleBonusToggle = (productId: number, checked: boolean) => {
+  const handleQuantityChange = (productId: number, isBonus: boolean, value: string) => {
     setItems((current) =>
-      current.map((item) => (item.product_id === productId ? { ...item, is_bonus: checked } : item))
+      current.map((item) =>
+        item.product_id === productId && item.is_bonus === isBonus ? { ...item, quantity: value } : item
+      )
     );
   };
 
-  const handleRemoveItem = (productId: number) => {
-    setItems((current) => current.filter((item) => item.product_id !== productId));
+  const handlePriceChange = (productId: number, isBonus: boolean, value: string) => {
+    setItems((current) =>
+      current.map((item) =>
+        item.product_id === productId && item.is_bonus === isBonus ? { ...item, price: value } : item
+      )
+    );
   };
+
+  const handleRemoveItem = (productId: number, isBonus: boolean) => {
+    setItems((current) =>
+      current.filter((item) => !(item.product_id === productId && item.is_bonus === isBonus))
+    );
+  };
+
+  const goodsItemsList = useMemo(() => items.filter((item) => !item.is_bonus), [items]);
+  const bonusItemsList = useMemo(() => items.filter((item) => item.is_bonus), [items]);
+
+  const calculateItemsTotal = useCallback(
+    (list: OrderFormItem[]) => {
+      return list.reduce((sum, item) => {
+        const quantity = Number(item.quantity || 0);
+        if (Number.isNaN(quantity)) {
+          return sum;
+        }
+
+        let priceValue: number;
+        if (item.price.trim() === "") {
+          const stockItem = stockMap.get(item.product_id);
+          priceValue = stockItem?.price ?? 0;
+        } else {
+          priceValue = Number(item.price.trim());
+        }
+
+        if (Number.isNaN(priceValue) || priceValue < 0) {
+          return sum;
+        }
+
+        return sum + quantity * priceValue;
+      }, 0);
+    },
+    [stockMap]
+  );
+
+  const totalGoodsAmount = useMemo(
+    () => calculateItemsTotal(goodsItemsList),
+    [calculateItemsTotal, goodsItemsList]
+  );
+
+  const totalBonusAmount = useMemo(
+    () => calculateItemsTotal(bonusItemsList),
+    [calculateItemsTotal, bonusItemsList]
+  );
+
+  const totalGoodsQuantity = useMemo(
+    () =>
+      goodsItemsList.reduce((sum, item) => {
+        const quantity = Number(item.quantity || 0);
+        return Number.isNaN(quantity) ? sum : sum + quantity;
+      }, 0),
+    [goodsItemsList]
+  );
+
+  const totalBonusQuantity = useMemo(
+    () =>
+      bonusItemsList.reduce((sum, item) => {
+        const quantity = Number(item.quantity || 0);
+        return Number.isNaN(quantity) ? sum : sum + quantity;
+      }, 0),
+    [bonusItemsList]
+  );
+
+  const returnsAmountValue = useMemo(() => {
+    if (!returnsAmountInput.trim()) {
+      return 0;
+    }
+    const parsed = Number(returnsAmountInput);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }, [returnsAmountInput]);
+
+  const payableAmount = useMemo(() => {
+    const diff = totalGoodsAmount - returnsAmountValue;
+    return diff > 0 ? diff : 0;
+  }, [returnsAmountValue, totalGoodsAmount]);
 
   const orderMutation = useMutation({
     mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
@@ -271,10 +451,12 @@ export default function ManagerOrders() {
       toast({ title: "Товары выданы магазину" });
       setShopId("");
       setItems([]);
-      resetProductSelection();
+      resetGoodsSelection();
+      resetBonusSelection();
+      setReturnsAmountInput("0");
       setPendingOrderPayload(null);
+      setPendingSummary(null);
       setPaymentDialogOpen(false);
-      setPendingTotalAmount(0);
       setPaidAmountInput("");
       setPaymentError(null);
       queryClient.invalidateQueries({ queryKey: ["manager", "stock"] });
@@ -317,6 +499,13 @@ export default function ManagerOrders() {
       return;
     }
 
+    const returnsAmount = returnsAmountInput.trim() === "" ? 0 : Number(returnsAmountInput);
+    if (Number.isNaN(returnsAmount) || returnsAmount < 0) {
+      toast({ title: "Ошибка", description: "Сумма возврата должна быть неотрицательной", variant: "destructive" });
+      return;
+    }
+
+    const aggregated = new Map<number, number>();
     for (const item of items) {
       const quantityNumber = Number(item.quantity.trim());
       if (item.quantity.trim() === "" || Number.isNaN(quantityNumber) || quantityNumber <= 0) {
@@ -324,16 +513,7 @@ export default function ManagerOrders() {
         return;
       }
 
-      const stockItem = stockMap.get(item.product_id);
-      const available = stockItem?.quantity ?? 0;
-      if (quantityNumber > available) {
-        toast({
-          title: "Недостаточно товара",
-          description: `${stockItem?.name ?? `Товар ${item.product_id}`}: доступно ${available}, указано ${quantityNumber}`,
-          variant: "destructive",
-        });
-        return;
-      }
+      aggregated.set(item.product_id, (aggregated.get(item.product_id) ?? 0) + quantityNumber);
 
       if (item.price.trim() !== "") {
         const priceNumber = Number(item.price.trim());
@@ -341,6 +521,20 @@ export default function ManagerOrders() {
           toast({ title: "Ошибка", description: "Цена должна быть неотрицательной", variant: "destructive" });
           return;
         }
+      }
+    }
+
+    for (const [productId, totalQuantity] of aggregated.entries()) {
+      const stockItem = stockMap.get(productId);
+      const available = stockItem?.quantity ?? 0;
+      if (totalQuantity > available) {
+        const name = stockItem?.name ?? `Товар ${productId}`;
+        toast({
+          title: "Недостаточно товара",
+          description: `${name}: доступно ${available}, указано ${totalQuantity}`,
+          variant: "destructive",
+        });
+        return;
       }
     }
 
@@ -355,39 +549,24 @@ export default function ManagerOrders() {
       };
     });
 
-    const computedTotal = payloadItems.reduce((sum, item) => {
-      const product = stockMap.get(item.product_id);
-      const price = item.price ?? product?.price ?? 0;
-      return sum + item.quantity * (price ?? 0);
-    }, 0);
+    const goodsAmount = totalGoodsAmount;
+    const payable = goodsAmount - returnsAmount > 0 ? goodsAmount - returnsAmount : 0;
 
-    setPendingOrderPayload({
+    const payload: ShopOrderCreatePayload = {
       shop_id: Number(shopId),
+      returns: { amount: returnsAmount },
       items: payloadItems,
-    });
-    setPendingTotalAmount(computedTotal);
-    setPaidAmountInput(computedTotal ? computedTotal.toFixed(2) : "0");
+      paid_amount: payable,
+    };
+
+    setPendingOrderPayload(payload);
+    setPendingSummary({ totalGoodsAmount: goodsAmount, returnsAmount, payableAmount: payable });
+    setPaidAmountInput(payable ? payable.toFixed(2) : "0");
     setPaymentError(null);
     setPaymentDialogOpen(true);
   };
 
-  const totalRequested = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  const totalAmount = useMemo(() => {
-    return items.reduce((sum, item) => {
-      const quantity = Number(item.quantity || 0);
-      if (Number.isNaN(quantity)) {
-        return sum;
-      }
-
-      const stockItem = stockMap.get(item.product_id);
-      const priceValue = item.price.trim() !== "" ? Number(item.price) : stockItem?.price ?? 0;
-      if (Number.isNaN(priceValue) || priceValue == null) {
-        return sum;
-      }
-
-      return sum + quantity * priceValue;
-    }, 0);
-  }, [items, stockMap]);
+  const totalRequested = totalGoodsQuantity + totalBonusQuantity;
   const handlePaidAmountChange = (value: string) => {
     setPaidAmountInput(value);
     if (value.trim() === "") {
@@ -406,8 +585,8 @@ export default function ManagerOrders() {
       return;
     }
 
-    if (parsed > pendingTotalAmount) {
-      setPaymentError("Сумма не может превышать общий заказ");
+    if (pendingSummary && parsed > pendingSummary.payableAmount) {
+      setPaymentError("Сумма не может превышать сумму к оплате");
       return;
     }
 
@@ -415,7 +594,7 @@ export default function ManagerOrders() {
   };
 
   const handleConfirmOrder = () => {
-    if (!pendingOrderPayload) {
+    if (!pendingOrderPayload || !pendingSummary) {
       return;
     }
 
@@ -425,38 +604,53 @@ export default function ManagerOrders() {
       return;
     }
 
-    if (parsed < 0 || parsed > pendingTotalAmount) {
-      setPaymentError("Сумма оплаты должна быть от 0 до общей суммы заказа");
+    if (parsed < 0) {
+      setPaymentError("Сумма не может быть отрицательной");
+      return;
+    }
+
+    if (parsed > pendingSummary.payableAmount) {
+      setPaymentError("Сумма не может превышать сумму к оплате");
       return;
     }
 
     orderMutation.mutate({
       ...pendingOrderPayload,
-      payment: { paid_amount: parsed },
+      paid_amount: parsed,
     });
   };
 
   const pendingPaid = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
-  const pendingDebt = Math.max(
-    Number.isNaN(pendingPaid) ? pendingTotalAmount : pendingTotalAmount - pendingPaid,
-    0,
-  );
+  const pendingDebt = pendingSummary
+    ? Math.max(
+        Number.isNaN(pendingPaid)
+          ? pendingSummary.payableAmount
+          : pendingSummary.payableAmount - pendingPaid,
+        0,
+      )
+    : 0;
 
   const handlePaymentDialogChange = (open: boolean) => {
     setPaymentDialogOpen(open);
     if (!open && !orderMutation.isPending) {
       setPendingOrderPayload(null);
+      setPendingSummary(null);
       setPaymentError(null);
-      setPendingTotalAmount(0);
       setPaidAmountInput("");
     }
   };
 
-  const isAddDisabled =
+  const isGoodsAddDisabled =
     !selectedProduct ||
     !quantityInput.trim() ||
     Number.isNaN(Number(quantityInput)) ||
     Number(quantityInput) <= 0;
+
+  const isBonusAddDisabled =
+    !bonusSelectedProduct ||
+    !bonusQuantityInput.trim() ||
+    Number.isNaN(Number(bonusQuantityInput)) ||
+    Number(bonusQuantityInput) <= 0;
 
   return (
     <div className="space-y-6">
@@ -489,7 +683,28 @@ export default function ManagerOrders() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Добавить товар</Label>
+                <Label>Возврат (сумма)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={returnsAmountInput}
+                  onChange={(event) => setReturnsAmountInput(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Возврат уменьшает сумму к оплате по заказу
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-8">
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-lg font-semibold">Товары</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Обычные позиции заказа, которые оплачивает магазин
+                  </p>
+                </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <Popover open={productOpen} onOpenChange={setProductOpen}>
                     <PopoverTrigger asChild>
@@ -518,7 +733,7 @@ export default function ManagerOrders() {
                               <CommandItem
                                 key={product.product_id}
                                 value={String(product.product_id)}
-                                onSelect={() => handleSelectProduct(product)}
+                                onSelect={() => handleSelectGoodsProduct(product)}
                               >
                                 <Check
                                   className={cn(
@@ -554,147 +769,403 @@ export default function ManagerOrders() {
                     placeholder="Цена"
                     className="w-full sm:w-28"
                   />
-                  <Button type="button" onClick={addItem} disabled={isAddDisabled}>
+                  <Button type="button" onClick={addGoodsItem} disabled={isGoodsAddDisabled}>
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
-            </div>
 
-            <div className="hidden md:block">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Товар</TableHead>
-                    <TableHead className="w-28">Доступно</TableHead>
-                    <TableHead className="w-28">Количество</TableHead>
-                    <TableHead className="w-32">Цена</TableHead>
-                  <TableHead className="w-24 text-center">Бонус</TableHead>
-                  <TableHead className="w-12" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {items.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
-                      Товары не выбраны
-                    </TableCell>
-                  </TableRow>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Товар</TableHead>
+                      <TableHead className="w-24">Доступно</TableHead>
+                      <TableHead className="w-28">Количество</TableHead>
+                      <TableHead className="w-28">Цена</TableHead>
+                      <TableHead className="w-32">Сумма</TableHead>
+                      <TableHead className="w-12" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {goodsItemsList.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground">
+                          Товары не выбраны
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      goodsItemsList.map((item) => {
+                        const stockItem = stockMap.get(item.product_id);
+                        const quantity = Number(item.quantity || 0);
+                        const priceValue =
+                          item.price.trim() !== ""
+                            ? Number(item.price)
+                            : stockItem?.price ?? 0;
+                        const lineTotal =
+                          Number.isNaN(quantity) || Number.isNaN(priceValue)
+                            ? 0
+                            : quantity * priceValue;
+                        return (
+                          <TableRow key={`goods-${item.product_id}`}>
+                            <TableCell>{item.product_name}</TableCell>
+                            <TableCell>{stockItem?.quantity ?? 0}</TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={0}
+                                value={item.quantity}
+                                onChange={(event) =>
+                                  handleQuantityChange(item.product_id, false, event.target.value)
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={item.price}
+                                placeholder="—"
+                                onChange={(event) =>
+                                  handlePriceChange(item.product_id, false, event.target.value)
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>{currencyFormatter.format(lineTotal)}</TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleRemoveItem(item.product_id, false)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="space-y-3 md:hidden">
+                {goodsItemsList.length === 0 ? (
+                  <div className="rounded-lg border p-4 text-center text-muted-foreground">Товары не выбраны</div>
                 ) : (
-                  items.map((item) => {
-                      const stockItem = stockMap.get(item.product_id);
-                      return (
-                        <TableRow key={item.product_id}>
-                          <TableCell>{item.product_name}</TableCell>
-                          <TableCell>{stockItem?.quantity ?? 0}</TableCell>
-                          <TableCell>
+                  goodsItemsList.map((item) => {
+                    const stockItem = stockMap.get(item.product_id);
+                    const quantity = Number(item.quantity || 0);
+                    const priceValue =
+                      item.price.trim() !== ""
+                        ? Number(item.price)
+                        : stockItem?.price ?? 0;
+                    const lineTotal =
+                      Number.isNaN(quantity) || Number.isNaN(priceValue)
+                        ? 0
+                        : quantity * priceValue;
+                    return (
+                      <div key={`goods-mobile-${item.product_id}`} className="rounded-lg border p-4 space-y-3 bg-card">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <h3 className="text-base font-semibold leading-tight">{item.product_name}</h3>
+                            <p className="text-sm text-muted-foreground">
+                              Остаток: {stockItem?.quantity ?? 0}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveItem(item.product_id, false)}
+                            aria-label={`Удалить ${item.product_name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="space-y-1">
+                            <p className="text-xs uppercase text-muted-foreground">Количество</p>
                             <Input
                               type="number"
                               min={0}
                               value={item.quantity}
-                              onChange={(event) => handleQuantityChange(item.product_id, event.target.value)}
+                              onChange={(event) =>
+                                handleQuantityChange(item.product_id, false, event.target.value)
+                              }
                             />
-                          </TableCell>
-                          <TableCell>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs uppercase text-muted-foreground">Цена</p>
                             <Input
                               type="number"
                               min={0}
                               step="0.01"
                               value={item.price}
                               placeholder="—"
-                              onChange={(event) => handlePriceChange(item.product_id, event.target.value)}
-                            />
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <Checkbox
-                              checked={item.is_bonus}
-                              onCheckedChange={(checked) =>
-                                handleBonusToggle(item.product_id, checked === true)
+                              onChange={(event) =>
+                                handlePriceChange(item.product_id, false, event.target.value)
                               }
-                              aria-label={`Пометить ${item.product_name} как бонус`}
                             />
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <Button variant="ghost" size="icon" onClick={() => handleRemoveItem(item.product_id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })
-                  )}
-                </TableBody>
-              </Table>
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            Сумма: {currencyFormatter.format(lineTotal)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="space-y-3 border-t pt-4">
+                <div>
+                  <h3 className="text-lg font-semibold">Бонус</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Бонусные товары уменьшают остаток менеджера, но не увеличивают оплату
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Popover open={bonusProductOpen} onOpenChange={setBonusProductOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        role="combobox"
+                        className="w-full justify-between"
+                        onClick={() => setBonusProductOpen((prev) => !prev)}
+                      >
+                        {bonusSelectedProduct ? bonusSelectedProduct.name : "Выберите бонус"}
+                        <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[min(320px,90vw)] p-0" align="start">
+                      <Command>
+                        <CommandInput
+                          placeholder="Поиск товара..."
+                          value={bonusProductSearch}
+                          onValueChange={setBonusProductSearch}
+                        />
+                        <CommandList>
+                          <CommandEmpty>Товар не найден</CommandEmpty>
+                          <CommandGroup>
+                            {filteredBonusProducts.map((product) => (
+                              <CommandItem
+                                key={product.product_id}
+                                value={String(product.product_id)}
+                                onSelect={() => handleSelectBonusProduct(product)}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    bonusSelectedProduct?.product_id === product.product_id
+                                      ? "opacity-100"
+                                      : "opacity-0"
+                                  )}
+                                />
+                                <span className="flex-1">{product.name}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  Остаток: {product.quantity}
+                                </span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={bonusQuantityInput}
+                    onChange={(event) => setBonusQuantityInput(event.target.value)}
+                    placeholder="Кол-во"
+                    className="w-full sm:w-24"
+                  />
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={bonusPriceInput}
+                    onChange={(event) => setBonusPriceInput(event.target.value)}
+                    placeholder="Цена"
+                    className="w-full sm:w-28"
+                  />
+                  <Button type="button" onClick={addBonusItem} disabled={isBonusAddDisabled}>
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Товар</TableHead>
+                      <TableHead className="w-24">Доступно</TableHead>
+                      <TableHead className="w-28">Количество</TableHead>
+                      <TableHead className="w-28">Цена</TableHead>
+                      <TableHead className="w-32">Сумма</TableHead>
+                      <TableHead className="w-12" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {bonusItemsList.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-muted-foreground">
+                          Бонусные товары не выбраны
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      bonusItemsList.map((item) => {
+                        const stockItem = stockMap.get(item.product_id);
+                        const quantity = Number(item.quantity || 0);
+                        const priceValue =
+                          item.price.trim() !== ""
+                            ? Number(item.price)
+                            : stockItem?.price ?? 0;
+                        const lineTotal =
+                          Number.isNaN(quantity) || Number.isNaN(priceValue)
+                            ? 0
+                            : quantity * priceValue;
+                        return (
+                          <TableRow key={`bonus-${item.product_id}`}>
+                            <TableCell>{item.product_name}</TableCell>
+                            <TableCell>{stockItem?.quantity ?? 0}</TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={0}
+                                value={item.quantity}
+                                onChange={(event) =>
+                                  handleQuantityChange(item.product_id, true, event.target.value)
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={item.price}
+                                placeholder="—"
+                                onChange={(event) =>
+                                  handlePriceChange(item.product_id, true, event.target.value)
+                                }
+                              />
+                            </TableCell>
+                            <TableCell>{currencyFormatter.format(lineTotal)}</TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleRemoveItem(item.product_id, true)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="space-y-3 md:hidden">
+                {bonusItemsList.length === 0 ? (
+                  <div className="rounded-lg border p-4 text-center text-muted-foreground">Бонусные товары не выбраны</div>
+                ) : (
+                  bonusItemsList.map((item) => {
+                    const stockItem = stockMap.get(item.product_id);
+                    const quantity = Number(item.quantity || 0);
+                    const priceValue =
+                      item.price.trim() !== ""
+                        ? Number(item.price)
+                        : stockItem?.price ?? 0;
+                    const lineTotal =
+                      Number.isNaN(quantity) || Number.isNaN(priceValue)
+                        ? 0
+                        : quantity * priceValue;
+                    return (
+                      <div key={`bonus-mobile-${item.product_id}`} className="rounded-lg border p-4 space-y-3 bg-card">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <h3 className="text-base font-semibold leading-tight">{item.product_name}</h3>
+                            <p className="text-sm text-muted-foreground">
+                              Остаток: {stockItem?.quantity ?? 0}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveItem(item.product_id, true)}
+                            aria-label={`Удалить ${item.product_name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="space-y-1">
+                            <p className="text-xs uppercase text-muted-foreground">Количество</p>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={item.quantity}
+                              onChange={(event) =>
+                                handleQuantityChange(item.product_id, true, event.target.value)
+                              }
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs uppercase text-muted-foreground">Цена</p>
+                            <Input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={item.price}
+                              placeholder="—"
+                              onChange={(event) =>
+                                handlePriceChange(item.product_id, true, event.target.value)
+                              }
+                            />
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            Сумма: {currencyFormatter.format(lineTotal)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
 
-            <div className="space-y-3 md:hidden">
-              {items.length === 0 ? (
-                <div className="rounded-lg border p-4 text-center text-muted-foreground">Товары не выбраны</div>
-              ) : (
-                items.map((item) => {
-                  const stockItem = stockMap.get(item.product_id);
-                  return (
-                    <div key={item.product_id} className="rounded-lg border p-4 space-y-3 bg-card">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <h3 className="text-base font-semibold leading-tight">{item.product_name}</h3>
-                          <p className="text-sm text-muted-foreground">
-                            Остаток: {stockItem?.quantity ?? 0}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="space-y-1">
-                          <p className="text-xs uppercase text-muted-foreground">Количество</p>
-                          <Input
-                            type="number"
-                            min={0}
-                            value={item.quantity}
-                            onChange={(event) => handleQuantityChange(item.product_id, event.target.value)}
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-xs uppercase text-muted-foreground">Цена</p>
-                          <Input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={item.price}
-                            placeholder="—"
-                            onChange={(event) => handlePriceChange(item.product_id, event.target.value)}
-                          />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            checked={item.is_bonus}
-                            onCheckedChange={(checked) =>
-                              handleBonusToggle(item.product_id, checked === true)
-                            }
-                            aria-label={`Пометить ${item.product_name} как бонус`}
-                          />
-                          <span className="text-sm">Бонус</span>
-                        </div>
-                      </div>
-                      <div className="flex justify-end">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleRemoveItem(item.product_id)}
-                          aria-label={`Удалить ${item.product_name}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <div className="rounded-lg border p-3 space-y-1">
+                <p className="text-xs uppercase text-muted-foreground">Обычные товары</p>
+                <p className="text-sm">Количество: {totalGoodsQuantity}</p>
+                <p className="text-sm">Сумма: {currencyFormatter.format(totalGoodsAmount)}</p>
+              </div>
+              <div className="rounded-lg border p-3 space-y-1">
+                <p className="text-xs uppercase text-muted-foreground">Бонусы</p>
+                <p className="text-sm">Количество: {totalBonusQuantity}</p>
+                <p className="text-sm">Сумма: {currencyFormatter.format(totalBonusAmount)}</p>
+              </div>
+              <div className="rounded-lg border p-3 space-y-1">
+                <p className="text-xs uppercase text-muted-foreground">Возврат</p>
+                <p className="text-sm">Сумма: {currencyFormatter.format(returnsAmountValue)}</p>
+              </div>
+              <div className="rounded-lg border p-3 space-y-1">
+                <p className="text-xs uppercase text-muted-foreground">К оплате</p>
+                <p className="text-sm font-semibold">{currencyFormatter.format(payableAmount)}</p>
+              </div>
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-muted-foreground">Всего товаров: {totalRequested}</p>
+              <p className="text-sm text-muted-foreground">Всего позиций: {totalRequested}</p>
               <p className="text-sm text-muted-foreground">
-                Сумма заказа: {currencyFormatter.format(totalAmount)}
+                К оплате: {currencyFormatter.format(payableAmount)}
               </p>
               <Button type="submit" className="w-full sm:w-56" disabled={orderMutation.isPending}>
                 {orderMutation.isPending ? "Отправка..." : "Отдать"}
@@ -816,8 +1287,12 @@ export default function ManagerOrders() {
                 </Table>
               </div>
               <div className="text-sm text-muted-foreground space-y-1">
-                <p>Сумма: {currencyFormatter.format(detailOrder.payment?.total_amount ?? 0)}</p>
-                <p>Оплачено: {currencyFormatter.format(detailOrder.payment?.paid_amount ?? detailOrder.payment?.total_amount ?? 0)}</p>
+                <p>
+                  Сумма обычных товаров: {currencyFormatter.format(detailOrder.payment?.total_goods_amount ?? 0)}
+                </p>
+                <p>Возврат: {currencyFormatter.format(detailOrder.payment?.returns_amount ?? 0)}</p>
+                <p>К оплате: {currencyFormatter.format(detailOrder.payment?.payable_amount ?? 0)}</p>
+                <p>Оплачено: {currencyFormatter.format(detailOrder.payment?.paid_amount ?? 0)}</p>
                 <p>Долг: {currencyFormatter.format(detailOrder.payment?.debt_amount ?? 0)}</p>
               </div>
             </div>
@@ -832,7 +1307,11 @@ export default function ManagerOrders() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="text-sm text-muted-foreground space-y-1">
-              <p>Сумма заказа: {currencyFormatter.format(pendingTotalAmount)}</p>
+              <p>
+                Сумма обычных товаров: {currencyFormatter.format(pendingSummary?.totalGoodsAmount ?? 0)}
+              </p>
+              <p>Возврат: {currencyFormatter.format(pendingSummary?.returnsAmount ?? 0)}</p>
+              <p>К оплате: {currencyFormatter.format(pendingSummary?.payableAmount ?? 0)}</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="paid-amount">Сколько клиент платит сейчас</Label>

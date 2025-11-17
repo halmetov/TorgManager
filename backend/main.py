@@ -125,6 +125,85 @@ def ensure_shop_order_item_columns():
 ensure_shop_order_item_columns()
 
 
+def ensure_shop_order_payment_columns():
+    inspector = inspect(engine)
+    try:
+        columns = {column["name"] for column in inspector.get_columns("shop_order_payments")}
+    except Exception:
+        return
+
+    statements = []
+    if "total_goods_amount" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_payments ADD COLUMN IF NOT EXISTS total_goods_amount NUMERIC DEFAULT 0"
+        )
+    if "returns_amount" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_payments ADD COLUMN IF NOT EXISTS returns_amount NUMERIC DEFAULT 0"
+        )
+    if "payable_amount" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_payments ADD COLUMN IF NOT EXISTS payable_amount NUMERIC DEFAULT 0"
+        )
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+        if "total_amount" in columns:
+            connection.execute(
+                text(
+                    """
+                    UPDATE shop_order_payments
+                    SET total_goods_amount = COALESCE(total_amount, total_goods_amount, 0)
+                    WHERE total_goods_amount IS NULL OR total_goods_amount = 0
+                    """
+                )
+            )
+        else:
+            connection.execute(
+                text(
+                    """
+                    UPDATE shop_order_payments
+                    SET total_goods_amount = COALESCE(total_goods_amount, 0)
+                    WHERE total_goods_amount IS NULL
+                    """
+                )
+            )
+
+        connection.execute(
+            text(
+                """
+                UPDATE shop_order_payments
+                SET returns_amount = COALESCE(returns_amount, 0)
+                """
+            )
+        )
+
+        connection.execute(
+            text(
+                """
+                UPDATE shop_order_payments
+                SET payable_amount = GREATEST(total_goods_amount - COALESCE(returns_amount, 0), 0)
+                WHERE payable_amount IS NULL OR payable_amount < 0
+                """
+            )
+        )
+
+        connection.execute(
+            text("ALTER TABLE shop_order_payments ALTER COLUMN total_goods_amount SET NOT NULL")
+        )
+        connection.execute(
+            text("ALTER TABLE shop_order_payments ALTER COLUMN returns_amount SET NOT NULL")
+        )
+        connection.execute(
+            text("ALTER TABLE shop_order_payments ALTER COLUMN payable_amount SET NOT NULL")
+        )
+
+
+ensure_shop_order_payment_columns()
+
+
 def ensure_return_tables():
     create_returns = """
         CREATE TABLE IF NOT EXISTS returns (
@@ -1062,7 +1141,9 @@ def _fetch_shop_orders(
                 ],
                 "payment":
                     {
-                        "total_amount": _to_float(order.payment.total_amount),
+                        "total_goods_amount": _to_float(order.payment.total_goods_amount),
+                        "returns_amount": _to_float(order.payment.returns_amount),
+                        "payable_amount": _to_float(order.payment.payable_amount),
                         "paid_amount": _to_float(order.payment.paid_amount),
                         "debt_amount": _to_float(order.payment.debt_amount),
                     }
@@ -1712,11 +1793,24 @@ def get_admin_shop_period_report(
     range_start = datetime.combine(date_from, time_type.min)
     range_end = datetime.combine(date_to, time_type.min) + timedelta(days=1)
 
+    price_expr = models.ShopOrderItem.quantity * func.coalesce(models.ShopOrderItem.price, 0)
+
     issued_total_raw = (
-        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
+        db.query(func.coalesce(func.sum(price_expr), 0))
         .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .scalar()
+        or 0
+    )
+
+    bonuses_total_raw = (
+        db.query(func.coalesce(func.sum(price_expr), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .filter(models.ShopOrderItem.is_bonus.is_(True))
         .scalar()
         or 0
     )
@@ -1730,20 +1824,166 @@ def get_admin_shop_period_report(
         or 0
     )
 
-    bonuses_total_raw = (
-        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
+    debt_total_raw = (
+        db.query(func.coalesce(func.sum(models.ShopOrderPayment.debt_amount), 0))
+        .join(models.ShopOrder, models.ShopOrderPayment.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .scalar()
+        or 0
+    )
+
+    day_stats: Dict[date, Dict[str, Decimal]] = {}
+    current_day = date_from
+    while current_day <= date_to:
+        day_stats[current_day] = {
+            "issued_total": Decimal("0"),
+            "returns_total": Decimal("0"),
+            "bonuses_total": Decimal("0"),
+            "debt_total": Decimal("0"),
+        }
+        current_day += timedelta(days=1)
+
+    issued_by_day = (
+        db.query(
+            func.date(models.ShopOrder.created_at).label("day"),
+            func.coalesce(func.sum(price_expr), 0).label("total"),
+        )
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .group_by(func.date(models.ShopOrder.created_at))
+        .all()
+    )
+
+    for row in issued_by_day:
+        day = row.day
+        if day in day_stats:
+            day_stats[day]["issued_total"] = _to_decimal(row.total)
+
+    bonuses_by_day = (
+        db.query(
+            func.date(models.ShopOrder.created_at).label("day"),
+            func.coalesce(func.sum(price_expr), 0).label("total"),
+        )
         .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
         .filter(models.ShopOrderItem.is_bonus.is_(True))
-        .scalar()
-        or 0
+        .group_by(func.date(models.ShopOrder.created_at))
+        .all()
     )
+
+    for row in bonuses_by_day:
+        day = row.day
+        if day in day_stats:
+            day_stats[day]["bonuses_total"] = _to_decimal(row.total)
+
+    returns_by_day = (
+        db.query(
+            func.date(models.ShopReturn.created_at).label("day"),
+            func.coalesce(func.sum(models.ShopReturnItem.quantity), 0).label("total"),
+        )
+        .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .filter(models.ShopReturn.shop_id == shop_id)
+        .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
+        .group_by(func.date(models.ShopReturn.created_at))
+        .all()
+    )
+
+    for row in returns_by_day:
+        day = row.day
+        if day in day_stats:
+            day_stats[day]["returns_total"] = _to_decimal(row.total)
+
+    debt_by_day = (
+        db.query(
+            func.date(models.ShopOrder.created_at).label("day"),
+            func.coalesce(func.sum(models.ShopOrderPayment.debt_amount), 0).label("total"),
+        )
+        .join(models.ShopOrder, models.ShopOrderPayment.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .group_by(func.date(models.ShopOrder.created_at))
+        .all()
+    )
+
+    for row in debt_by_day:
+        day = row.day
+        if day in day_stats:
+            day_stats[day]["debt_total"] = _to_decimal(row.total)
+
+    days = [
+        schemas.ShopDayStat(
+            date=day,
+            issued_total=values["issued_total"],
+            returns_total=values["returns_total"],
+            bonuses_total=values["bonuses_total"],
+            debt_total=values["debt_total"],
+        )
+        for day, values in sorted(day_stats.items())
+    ]
+
+    deliveries_rows = (
+        db.query(
+            models.ShopOrder.id,
+            models.ShopOrder.created_at,
+            models.Shop.name.label("shop_name"),
+            models.User.full_name,
+            models.User.username,
+        )
+        .join(models.Shop, models.Shop.id == models.ShopOrder.shop_id)
+        .join(models.User, models.User.id == models.ShopOrder.manager_id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .order_by(models.ShopOrder.created_at.asc(), models.ShopOrder.id.asc())
+        .all()
+    )
+
+    deliveries = [
+        schemas.ShopDocumentRef(
+            id=row.id,
+            type="delivery",
+            date=row.created_at,
+            shop_name=row.shop_name or "",
+            manager_name=(row.full_name or row.username or ""),
+        )
+        for row in deliveries_rows
+    ]
+
+    returns_rows = (
+        db.query(
+            models.ShopReturn.id,
+            models.ShopReturn.created_at,
+            models.Shop.name.label("shop_name"),
+            models.User.full_name,
+            models.User.username,
+        )
+        .join(models.Shop, models.Shop.id == models.ShopReturn.shop_id)
+        .join(models.User, models.User.id == models.ShopReturn.manager_id)
+        .filter(models.ShopReturn.shop_id == shop_id)
+        .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
+        .order_by(models.ShopReturn.created_at.asc(), models.ShopReturn.id.asc())
+        .all()
+    )
+
+    returns_from_shop = [
+        schemas.ShopDocumentRef(
+            id=row.id,
+            type="return_from_shop",
+            date=row.created_at,
+            shop_name=row.shop_name or "",
+            manager_name=(row.full_name or row.username or ""),
+        )
+        for row in returns_rows
+    ]
 
     summary = schemas.AdminShopPeriodSummary(
         issued_total=_to_decimal(issued_total_raw),
         returns_total=_to_decimal(returns_total_raw),
         bonuses_total=_to_decimal(bonuses_total_raw),
+        debt_total=_to_decimal(debt_total_raw),
     )
 
     return schemas.AdminShopPeriodReport(
@@ -1752,6 +1992,9 @@ def get_admin_shop_period_report(
         date_from=date_from,
         date_to=date_to,
         summary=summary,
+        days=days,
+        deliveries=deliveries,
+        returns_from_shop=returns_from_shop,
     )
 
 
@@ -2009,13 +2252,14 @@ def create_shop_order(
     totals_by_product: Dict[int, int] = {}
     line_items: List[Dict[str, Any]] = []
     for item in order.items:
-        quantity_value = int(item.quantity)
+        quantity_decimal = Decimal(str(item.quantity))
+        quantity_value = int(quantity_decimal)
         if quantity_value <= 0:
             raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
 
         price_value: Optional[Decimal] = None
         if item.price is not None:
-            price_value = Decimal(item.price)
+            price_value = Decimal(str(item.price))
             if price_value < 0:
                 raise HTTPException(status_code=400, detail="Цена не может быть отрицательной")
 
@@ -2068,8 +2312,19 @@ def create_shop_order(
             detail={"error": "INSUFFICIENT_STOCK", "items": insufficient},
         )
 
+    returns_amount = Decimal("0")
+    if order.returns and order.returns.amount is not None:
+        returns_amount = Decimal(str(order.returns.amount))
+    if returns_amount < 0:
+        raise HTTPException(status_code=400, detail="Сумма возврата не может быть отрицательной")
+
+    paid_amount = Decimal(str(order.paid_amount))
+    if paid_amount < 0:
+        raise HTTPException(status_code=400, detail="Оплата не может быть отрицательной")
+
     now = datetime.now(timezone.utc)
-    total_amount = Decimal("0")
+    total_goods_amount = Decimal("0")
+    total_bonus_amount = Decimal("0")
 
     try:
         order_row = models.ShopOrder(
@@ -2088,9 +2343,14 @@ def create_shop_order(
             product = manager_map[item_data["product_id"]]
             fallback_price = Decimal(str(product.price or 0))
             price_decimal = item_data["price"] if item_data["price"] is not None else fallback_price
+            if price_decimal < 0:
+                raise HTTPException(status_code=400, detail="Цена не может быть отрицательной")
 
             line_total = Decimal(str(item_data["quantity"])) * price_decimal
-            total_amount += line_total
+            if item_data["is_bonus"]:
+                total_bonus_amount += line_total
+            else:
+                total_goods_amount += line_total
 
             db.add(
                 models.ShopOrderItem(
@@ -2102,20 +2362,20 @@ def create_shop_order(
                 )
             )
 
-        payment_data = order.payment
-        paid_amount = total_amount
-        if payment_data and payment_data.paid_amount is not None:
-            paid_amount = Decimal(payment_data.paid_amount)
+        payable_amount = total_goods_amount - returns_amount
+        if payable_amount < 0:
+            payable_amount = Decimal("0")
 
-        if paid_amount < 0 or paid_amount > total_amount:
-            raise HTTPException(status_code=400, detail="Недопустимая сумма оплаты")
-
-        debt_amount = total_amount - paid_amount
+        debt_amount = payable_amount - paid_amount
+        if debt_amount < 0:
+            debt_amount = Decimal("0")
 
         db.add(
             models.ShopOrderPayment(
                 order_id=order_row.id,
-                total_amount=total_amount,
+                total_goods_amount=total_goods_amount,
+                returns_amount=returns_amount,
+                payable_amount=payable_amount,
                 paid_amount=paid_amount,
                 debt_amount=debt_amount,
                 created_at=now,
@@ -2165,15 +2425,22 @@ def get_shop_order_detail(
 
     sorted_items = sorted(order.items, key=lambda item: item.id)
     total_quantity = Decimal("0")
-    total_amount = Decimal("0")
+    total_goods_amount = Decimal("0")
+    total_bonus_quantity = Decimal("0")
+    total_bonus_amount = Decimal("0")
     items: List[Dict[str, Any]] = []
 
     for item in sorted_items:
         quantity_decimal = Decimal(str(item.quantity))
         price_decimal = Decimal(str(item.price)) if item.price is not None else None
-        line_total = quantity_decimal * (price_decimal or Decimal("0"))
+        effective_price = price_decimal or Decimal("0")
+        line_total = quantity_decimal * effective_price
         total_quantity += quantity_decimal
-        total_amount += line_total
+        if item.is_bonus:
+            total_bonus_quantity += quantity_decimal
+            total_bonus_amount += line_total
+        else:
+            total_goods_amount += line_total
 
         items.append(
             {
@@ -2190,6 +2457,16 @@ def get_shop_order_detail(
     if order.manager:
         manager_name = order.manager.full_name or order.manager.username or ""
 
+    payment_data = None
+    if order.payment:
+        payment_data = schemas.ShopOrderPaymentOut(
+            total_goods_amount=_to_decimal(order.payment.total_goods_amount),
+            returns_amount=_to_decimal(order.payment.returns_amount),
+            payable_amount=_to_decimal(order.payment.payable_amount),
+            paid_amount=_to_decimal(order.payment.paid_amount),
+            debt_amount=_to_decimal(order.payment.debt_amount),
+        )
+
     return schemas.ShopOrderDetail(
         id=order.id,
         manager_id=order.manager_id,
@@ -2198,8 +2475,11 @@ def get_shop_order_detail(
         shop_name=order.shop.name if order.shop else "",
         created_at=order.created_at,
         total_quantity=total_quantity,
-        total_amount=total_amount,
+        total_goods_amount=total_goods_amount,
+        total_bonus_quantity=total_bonus_quantity,
+        total_bonus_amount=total_bonus_amount,
         items=items,
+        payment=payment_data,
     )
 
 
