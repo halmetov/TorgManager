@@ -379,12 +379,13 @@ class ShopDayStat(BaseModel):
     debt_total: Decimal
 
 
-class ShopDocumentRef(BaseModel):
+class ShopDocumentRow(BaseModel):
     id: int
-    type: Literal["delivery", "return_from_shop"]
+    type: Literal["delivery", "return_from_shop", "bonus"]
     date: datetime
-    shop_name: str
+    amount: Decimal
     manager_name: str
+    debt_amount: Optional[Decimal] = None
 
 
 class AdminShopPeriodSummary(BaseModel):
@@ -401,5 +402,6 @@ class AdminShopPeriodReport(BaseModel):
     date_to: date
     summary: AdminShopPeriodSummary
     days: List[ShopDayStat]
-    deliveries: List[ShopDocumentRef]
-    returns_from_shop: List[ShopDocumentRef]
+    deliveries: List[ShopDocumentRow]
+    returns_from_shop: List[ShopDocumentRow]
+    bonuses: List[ShopDocumentRow]

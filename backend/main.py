@@ -145,6 +145,14 @@ def ensure_shop_order_payment_columns():
         statements.append(
             "ALTER TABLE shop_order_payments ADD COLUMN IF NOT EXISTS payable_amount NUMERIC DEFAULT 0"
         )
+    if "paid_amount" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_payments ADD COLUMN IF NOT EXISTS paid_amount NUMERIC DEFAULT 0"
+        )
+    if "debt_amount" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_payments ADD COLUMN IF NOT EXISTS debt_amount NUMERIC DEFAULT 0"
+        )
 
     with engine.begin() as connection:
         for statement in statements:
@@ -191,6 +199,16 @@ def ensure_shop_order_payment_columns():
         )
 
         connection.execute(
+            text(
+                """
+                UPDATE shop_order_payments
+                SET paid_amount = COALESCE(paid_amount, 0),
+                    debt_amount = GREATEST(COALESCE(payable_amount, 0) - COALESCE(paid_amount, 0), 0)
+                """
+            )
+        )
+
+        connection.execute(
             text("ALTER TABLE shop_order_payments ALTER COLUMN total_goods_amount SET NOT NULL")
         )
         connection.execute(
@@ -198,6 +216,12 @@ def ensure_shop_order_payment_columns():
         )
         connection.execute(
             text("ALTER TABLE shop_order_payments ALTER COLUMN payable_amount SET NOT NULL")
+        )
+        connection.execute(
+            text("ALTER TABLE shop_order_payments ALTER COLUMN paid_amount SET NOT NULL")
+        )
+        connection.execute(
+            text("ALTER TABLE shop_order_payments ALTER COLUMN debt_amount SET NOT NULL")
         )
 
 
@@ -1929,25 +1953,37 @@ def get_admin_shop_period_report(
         db.query(
             models.ShopOrder.id,
             models.ShopOrder.created_at,
-            models.Shop.name.label("shop_name"),
             models.User.full_name,
             models.User.username,
+            func.coalesce(func.sum(price_expr), 0).label("amount"),
+            func.coalesce(models.ShopOrderPayment.debt_amount, 0).label("debt_amount"),
         )
         .join(models.Shop, models.Shop.id == models.ShopOrder.shop_id)
         .join(models.User, models.User.id == models.ShopOrder.manager_id)
+        .join(models.ShopOrderItem, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .outerjoin(models.ShopOrderPayment, models.ShopOrderPayment.order_id == models.ShopOrder.id)
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .group_by(
+            models.ShopOrder.id,
+            models.ShopOrder.created_at,
+            models.User.full_name,
+            models.User.username,
+            models.ShopOrderPayment.debt_amount,
+        )
         .order_by(models.ShopOrder.created_at.asc(), models.ShopOrder.id.asc())
         .all()
     )
 
     deliveries = [
-        schemas.ShopDocumentRef(
+        schemas.ShopDocumentRow(
             id=row.id,
             type="delivery",
             date=row.created_at,
-            shop_name=row.shop_name or "",
+            amount=_to_decimal(row.amount),
             manager_name=(row.full_name or row.username or ""),
+            debt_amount=_to_decimal(row.debt_amount),
         )
         for row in deliveries_rows
     ]
@@ -1956,27 +1992,69 @@ def get_admin_shop_period_report(
         db.query(
             models.ShopReturn.id,
             models.ShopReturn.created_at,
-            models.Shop.name.label("shop_name"),
             models.User.full_name,
             models.User.username,
+            func.coalesce(func.sum(models.ShopReturnItem.quantity), 0).label("amount"),
         )
         .join(models.Shop, models.Shop.id == models.ShopReturn.shop_id)
         .join(models.User, models.User.id == models.ShopReturn.manager_id)
+        .join(models.ShopReturnItem, models.ShopReturnItem.return_id == models.ShopReturn.id)
         .filter(models.ShopReturn.shop_id == shop_id)
         .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
+        .group_by(
+            models.ShopReturn.id,
+            models.ShopReturn.created_at,
+            models.User.full_name,
+            models.User.username,
+        )
         .order_by(models.ShopReturn.created_at.asc(), models.ShopReturn.id.asc())
         .all()
     )
 
     returns_from_shop = [
-        schemas.ShopDocumentRef(
+        schemas.ShopDocumentRow(
             id=row.id,
             type="return_from_shop",
             date=row.created_at,
-            shop_name=row.shop_name or "",
+            amount=_to_decimal(row.amount),
             manager_name=(row.full_name or row.username or ""),
         )
         for row in returns_rows
+    ]
+
+    bonuses_rows = (
+        db.query(
+            models.ShopOrder.id,
+            models.ShopOrder.created_at,
+            models.User.full_name,
+            models.User.username,
+            func.coalesce(func.sum(price_expr), 0).label("amount"),
+        )
+        .join(models.Shop, models.Shop.id == models.ShopOrder.shop_id)
+        .join(models.User, models.User.id == models.ShopOrder.manager_id)
+        .join(models.ShopOrderItem, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.shop_id == shop_id)
+        .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
+        .filter(models.ShopOrderItem.is_bonus.is_(True))
+        .group_by(
+            models.ShopOrder.id,
+            models.ShopOrder.created_at,
+            models.User.full_name,
+            models.User.username,
+        )
+        .order_by(models.ShopOrder.created_at.asc(), models.ShopOrder.id.asc())
+        .all()
+    )
+
+    bonuses = [
+        schemas.ShopDocumentRow(
+            id=row.id,
+            type="bonus",
+            date=row.created_at,
+            amount=_to_decimal(row.amount),
+            manager_name=(row.full_name or row.username or ""),
+        )
+        for row in bonuses_rows
     ]
 
     summary = schemas.AdminShopPeriodSummary(
@@ -1995,6 +2073,7 @@ def get_admin_shop_period_report(
         days=days,
         deliveries=deliveries,
         returns_from_shop=returns_from_shop,
+        bonuses=bonuses,
     )
 
 
@@ -2383,18 +2462,29 @@ def create_shop_order(
         )
 
         db.commit()
+        created_orders = _fetch_shop_orders(db, order_ids=[order_row.id])
+        if not created_orders:
+            raise HTTPException(status_code=500, detail="Не удалось получить созданный заказ")
+        return created_orders[0]
     except HTTPException:
         db.rollback()
         raise
-    except Exception:
+    except IntegrityError as exc:
         db.rollback()
-        raise
-
-    created_orders = _fetch_shop_orders(db, order_ids=[order_row.id])
-    if not created_orders:
-        raise HTTPException(status_code=500, detail="Не удалось получить созданный заказ")
-
-    return created_orders[0]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Database error while creating shop order: {exc.orig}",
+        ) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail="Database error while creating shop order"
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail="Unexpected error while creating shop order"
+        ) from exc
 
 
 @app.get("/shop-orders/{order_id}", response_model=schemas.ShopOrderDetail)
