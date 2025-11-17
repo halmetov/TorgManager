@@ -1165,6 +1165,7 @@ def _fetch_shop_orders(
                 ],
                 "payment":
                     {
+                        "total_amount": _to_float(order.payment.total_amount),
                         "total_goods_amount": _to_float(order.payment.total_goods_amount),
                         "returns_amount": _to_float(order.payment.returns_amount),
                         "payable_amount": _to_float(order.payment.payable_amount),
@@ -2445,6 +2446,7 @@ def create_shop_order(
         if payable_amount < 0:
             payable_amount = Decimal("0")
 
+        total_amount = total_goods_amount
         debt_amount = payable_amount - paid_amount
         if debt_amount < 0:
             debt_amount = Decimal("0")
@@ -2452,6 +2454,7 @@ def create_shop_order(
         db.add(
             models.ShopOrderPayment(
                 order_id=order_row.id,
+                total_amount=total_amount,
                 total_goods_amount=total_goods_amount,
                 returns_amount=returns_amount,
                 payable_amount=payable_amount,
@@ -2550,6 +2553,7 @@ def get_shop_order_detail(
     payment_data = None
     if order.payment:
         payment_data = schemas.ShopOrderPaymentOut(
+            total_amount=_to_decimal(order.payment.total_amount),
             total_goods_amount=_to_decimal(order.payment.total_goods_amount),
             returns_amount=_to_decimal(order.payment.returns_amount),
             payable_amount=_to_decimal(order.payment.payable_amount),

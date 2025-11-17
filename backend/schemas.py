@@ -221,6 +221,7 @@ class ShopOrderItemOut(BaseModel):
 
 
 class ShopOrderPaymentOut(BaseModel):
+    total_amount: Decimal
     total_goods_amount: Decimal
     returns_amount: Decimal
     payable_amount: Decimal
