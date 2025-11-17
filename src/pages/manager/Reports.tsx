@@ -16,10 +16,14 @@ import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ManagerDailySummary {
-  received_total: string | number;
-  delivered_total: string | number;
-  return_to_main_total: string | number;
-  return_from_shops_total: string | number;
+  received_qty: string | number;
+  received_amount: string | number;
+  delivered_qty: string | number;
+  delivered_amount: string | number;
+  return_to_main_qty: string | number;
+  return_to_main_amount: string | number;
+  return_from_shops_qty: string | number;
+  return_from_shops_amount: string | number;
 }
 
 interface MovementRow {
@@ -46,30 +50,40 @@ const movementOptions: { value: MovementType; label: string }[] = [
 ];
 
 interface ShopOrderDetailItem {
-  product_id: number;
   product_name: string;
   quantity: string | number;
-  price?: string | number | null;
+  price: string | number;
   line_total: string | number;
   is_bonus: boolean;
+  is_return: boolean;
+}
+
+interface ShopOrderPaymentDetail {
+  total_amount: string | number;
+  returns_amount: string | number;
+  payable_amount: string | number;
+  paid_amount: string | number;
+  debt_amount: string | number;
 }
 
 interface ShopOrderDetail {
   id: number;
-  manager_id: number;
   manager_name: string;
-  shop_id: number;
   shop_name: string;
   created_at: string;
-  total_quantity: string | number;
-  total_amount: string | number;
   items: ShopOrderDetailItem[];
+  payment: ShopOrderPaymentDetail;
+  total_goods_amount: string | number;
+  total_bonus_amount: string | number;
+  total_return_amount: string | number;
 }
 
 interface ManagerReturnDetailItem {
   product_id: number;
   product_name: string;
   quantity: string | number;
+  price: string | number;
+  line_total: string | number;
 }
 
 interface ManagerReturnDetail {
@@ -77,6 +91,7 @@ interface ManagerReturnDetail {
   manager_id: number;
   manager_name: string;
   created_at: string;
+  total_amount: string | number;
   items: ManagerReturnDetailItem[];
 }
 
@@ -84,6 +99,8 @@ interface ShopReturnDetailItem {
   product_id: number;
   product_name: string;
   quantity: string | number;
+  price: string | number;
+  line_total: string | number;
 }
 
 interface ShopReturnDetail {
@@ -93,6 +110,7 @@ interface ShopReturnDetail {
   shop_id: number;
   shop_name: string;
   created_at: string;
+  total_amount: string | number;
   items: ShopReturnDetailItem[];
 }
 
@@ -141,10 +159,26 @@ export default function ManagerReports() {
 
   const summaryCards = useMemo(
     () => [
-      { label: "Получено", value: report?.summary.received_total ?? 0 },
-      { label: "Доставлено", value: report?.summary.delivered_total ?? 0 },
-      { label: "Возврат в главный склад", value: report?.summary.return_to_main_total ?? 0 },
-      { label: "Возврат из магазинов", value: report?.summary.return_from_shops_total ?? 0 },
+      {
+        label: "Получено",
+        qty: report?.summary.received_qty ?? 0,
+        amount: report?.summary.received_amount ?? 0,
+      },
+      {
+        label: "Доставлено",
+        qty: report?.summary.delivered_qty ?? 0,
+        amount: report?.summary.delivered_amount ?? 0,
+      },
+      {
+        label: "Возврат в главный склад",
+        qty: report?.summary.return_to_main_qty ?? 0,
+        amount: report?.summary.return_to_main_amount ?? 0,
+      },
+      {
+        label: "Возврат из магазинов",
+        qty: report?.summary.return_from_shops_qty ?? 0,
+        amount: report?.summary.return_from_shops_amount ?? 0,
+      },
     ],
     [report?.summary]
   );
@@ -177,6 +211,18 @@ export default function ManagerReports() {
 
   const getTotalQuantity = (items: { quantity: string | number }[]) =>
     items.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
+
+  const getLineTotal = (
+    items: { line_total: string | number; [key: string]: any }[],
+    predicate: (item: any) => boolean
+  ) =>
+    items.reduce((sum, item) => (predicate(item) ? sum + Number(item.line_total ?? 0) : sum), 0);
+
+  const getQuantityTotal = (
+    items: { quantity: string | number; [key: string]: any }[],
+    predicate: (item: any) => boolean
+  ) =>
+    items.reduce((sum, item) => (predicate(item) ? sum + Number(item.quantity ?? 0) : sum), 0);
 
   const isSummaryLoading = isLoading && !report;
   const isMovementsLoading = (isLoading || isFetching) && !report;
@@ -245,6 +291,7 @@ export default function ManagerReports() {
                   <TableHead className="w-24">Кол-во</TableHead>
                   <TableHead className="w-28">Цена</TableHead>
                   <TableHead className="w-24 text-center">Бонус</TableHead>
+                  <TableHead className="w-24 text-center">Возврат</TableHead>
                   <TableHead className="w-32">Сумма</TableHead>
                 </TableRow>
               </TableHeader>
@@ -259,6 +306,7 @@ export default function ManagerReports() {
                         : formatCurrency(item.price)}
                     </TableCell>
                     <TableCell className="text-center">{item.is_bonus ? "Да" : "Нет"}</TableCell>
+                    <TableCell className="text-center">{item.is_return ? "Да" : "Нет"}</TableCell>
                     <TableCell>{formatCurrency(item.line_total)}</TableCell>
                   </TableRow>
                 ))}
@@ -266,8 +314,11 @@ export default function ManagerReports() {
             </Table>
           </div>
           <div className="text-sm text-muted-foreground space-y-1">
-            <p>Всего: {formatValue(data.total_quantity)} шт.</p>
-            <p>Сумма: {formatCurrency(data.total_amount)}</p>
+            <p>Всего товаров: {formatValue(getQuantityTotal(data.items, (item) => !item.is_return))} шт.</p>
+            <p>Сумма заказа: {formatCurrency(data.payment?.total_amount ?? data.total_goods_amount)}</p>
+            <p>Сумма возврата: {formatCurrency(data.payment?.returns_amount ?? data.total_return_amount)}</p>
+            <p>Сумма бонусов: {formatCurrency(data.total_bonus_amount ?? getLineTotal(data.items, (item) => item.is_bonus))}</p>
+            <p>Долг: {formatCurrency(data.payment?.debt_amount ?? 0)}</p>
           </div>
         </div>
       );
@@ -288,6 +339,8 @@ export default function ManagerReports() {
                 <TableRow>
                   <TableHead>Товар</TableHead>
                   <TableHead className="w-24">Кол-во</TableHead>
+                  <TableHead className="w-28">Цена</TableHead>
+                  <TableHead className="w-32">Сумма</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -295,12 +348,17 @@ export default function ManagerReports() {
                   <TableRow key={item.product_id}>
                     <TableCell>{item.product_name}</TableCell>
                     <TableCell>{formatValue(item.quantity)}</TableCell>
+                    <TableCell>{formatCurrency(item.price)}</TableCell>
+                    <TableCell>{formatCurrency(item.line_total)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </div>
-          <div className="text-sm text-muted-foreground">Всего: {formatValue(total)} шт.</div>
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Всего: {formatValue(total)} шт.</p>
+            <p>Сумма возврата: {formatCurrency(data.total_amount)}</p>
+          </div>
         </div>
       );
     }
@@ -320,6 +378,8 @@ export default function ManagerReports() {
               <TableRow>
                 <TableHead>Товар</TableHead>
                 <TableHead className="w-24">Кол-во</TableHead>
+                <TableHead className="w-28">Цена</TableHead>
+                <TableHead className="w-32">Сумма</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -327,12 +387,17 @@ export default function ManagerReports() {
                 <TableRow key={item.product_id}>
                   <TableCell>{item.product_name}</TableCell>
                   <TableCell>{formatValue(item.quantity)}</TableCell>
+                  <TableCell>{formatCurrency(item.price)}</TableCell>
+                  <TableCell>{formatCurrency(item.line_total)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
-        <div className="text-sm text-muted-foreground">Всего: {formatValue(total)} шт.</div>
+        <div className="text-sm text-muted-foreground space-y-1">
+          <p>Всего: {formatValue(total)} шт.</p>
+          <p>Сумма возврата: {formatCurrency(data.total_amount)}</p>
+        </div>
       </div>
     );
   };
@@ -385,9 +450,12 @@ export default function ManagerReports() {
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">{card.label}</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-1">
                 <p className="text-2xl font-semibold">
-                  {isSummaryLoading ? "—" : numberFormatter.format(Number(card.value ?? 0))}
+                  {isSummaryLoading ? "—" : `${numberFormatter.format(Number(card.qty ?? 0))} шт.`}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {isSummaryLoading ? "—" : formatCurrency(card.amount)}
                 </p>
               </CardContent>
             </Card>

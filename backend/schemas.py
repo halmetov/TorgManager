@@ -236,35 +236,41 @@ class ShopOrderOut(BaseModel):
     payment: Optional[ShopOrderPaymentOut] = None
 
 
-class ShopOrderDetailItem(BaseModel):
-    product_id: int
+class ShopOrderItemDetail(BaseModel):
     product_name: str
     quantity: Decimal
-    price: Optional[Decimal] = None
-    line_total: Decimal
+    price: Decimal
     is_bonus: bool
     is_return: bool
+    line_total: Decimal
+
+
+class ShopOrderPaymentDetail(BaseModel):
+    total_amount: Decimal
+    returns_amount: Decimal
+    payable_amount: Decimal
+    paid_amount: Decimal
+    debt_amount: Decimal
 
 
 class ShopOrderDetail(BaseModel):
     id: int
-    manager_id: int
-    manager_name: str
-    shop_id: int
     shop_name: str
+    manager_name: str
     created_at: datetime
-    total_quantity: Decimal
+    items: List[ShopOrderItemDetail]
+    payment: ShopOrderPaymentDetail
     total_goods_amount: Decimal
-    total_bonus_quantity: Decimal
     total_bonus_amount: Decimal
-    items: List[ShopOrderDetailItem]
-    payment: Optional[ShopOrderPaymentOut] = None
+    total_return_amount: Decimal
 
 
 class ManagerReturnDetailItem(BaseModel):
     product_id: int
     product_name: str
     quantity: Decimal
+    price: Decimal
+    line_total: Decimal
 
 
 class ManagerReturnDetail(BaseModel):
@@ -272,6 +278,7 @@ class ManagerReturnDetail(BaseModel):
     manager_id: int
     manager_name: str
     created_at: datetime
+    total_amount: Decimal
     items: List[ManagerReturnDetailItem]
 
 
@@ -279,6 +286,8 @@ class ShopReturnDetailItem(BaseModel):
     product_id: int
     product_name: str
     quantity: Decimal
+    price: Decimal
+    line_total: Decimal
 
 
 class ShopReturnDetail(BaseModel):
@@ -288,6 +297,7 @@ class ShopReturnDetail(BaseModel):
     shop_id: int
     shop_name: str
     created_at: datetime
+    total_amount: Decimal
     items: List[ShopReturnDetailItem]
 
 
@@ -344,10 +354,17 @@ class ManagerReturnOut(BaseModel):
 
 
 class ManagerDailySummary(BaseModel):
-    received_total: Decimal
-    delivered_total: Decimal
-    return_to_main_total: Decimal
-    return_from_shops_total: Decimal
+    received_qty: Decimal
+    received_amount: Decimal
+
+    delivered_qty: Decimal
+    delivered_amount: Decimal
+
+    return_to_main_qty: Decimal
+    return_to_main_amount: Decimal
+
+    return_from_shops_qty: Decimal
+    return_from_shops_amount: Decimal
 
 
 class MovementRow(BaseModel):

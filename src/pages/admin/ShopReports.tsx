@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { CalendarIcon, Eye } from "lucide-react";
+import { CalendarIcon, Eye, Loader2 } from "lucide-react";
 import type { DateRange } from "react-day-picker";
 
 import { api } from "@/lib/api";
@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ShopOption {
   id: number;
@@ -21,6 +22,14 @@ interface ShopOption {
 }
 
 interface AdminShopPeriodSummary {
+  issued_total: string | number;
+  returns_total: string | number;
+  bonuses_total: string | number;
+  debt_total: string | number;
+}
+
+interface ShopDayStat {
+  date: string;
   issued_total: string | number;
   returns_total: string | number;
   bonuses_total: string | number;
@@ -52,6 +61,54 @@ interface AdminShopPeriodReport {
   bonuses: ShopDocumentRow[];
 }
 
+interface ShopOrderDetailItem {
+  product_name: string;
+  quantity: string | number;
+  price: string | number;
+  line_total: string | number;
+  is_bonus: boolean;
+  is_return: boolean;
+}
+
+interface ShopOrderPaymentDetail {
+  total_amount: string | number;
+  returns_amount: string | number;
+  payable_amount: string | number;
+  paid_amount: string | number;
+  debt_amount: string | number;
+}
+
+interface ShopOrderDetail {
+  id: number;
+  manager_name: string;
+  shop_name: string;
+  created_at: string;
+  items: ShopOrderDetailItem[];
+  payment: ShopOrderPaymentDetail;
+  total_goods_amount: string | number;
+  total_bonus_amount: string | number;
+  total_return_amount: string | number;
+}
+
+interface ShopReturnDetailItem {
+  product_id: number;
+  product_name: string;
+  quantity: string | number;
+  price: string | number;
+  line_total: string | number;
+}
+
+interface ShopReturnDetail {
+  id: number;
+  manager_id: number;
+  manager_name: string;
+  shop_id: number;
+  shop_name: string;
+  created_at: string;
+  total_amount: string | number;
+  items: ShopReturnDetailItem[];
+}
+
 const numberFormatter = new Intl.NumberFormat("ru-RU", {
   minimumFractionDigits: 0,
   maximumFractionDigits: 2,
@@ -66,11 +123,20 @@ export default function AdminShopReports() {
   }));
   const [activeFilter, setActiveFilter] = useState<ReportFilter>("deliveries");
   const [selectedDebtDay, setSelectedDebtDay] = useState<string | null>(null);
+  const [debtModalOpen, setDebtModalOpen] = useState(false);
   const [submittedParams, setSubmittedParams] = useState<{
     shopId: number;
     dateFrom: string;
     dateTo: string;
   } | null>(null);
+  const [detail, setDetail] = useState<
+    | { type: "delivery" | "bonus"; data: ShopOrderDetail }
+    | { type: "return_from_shop"; data: ShopReturnDetail }
+    | null
+  >(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
 
   const { data: shops = [], isLoading: shopsLoading } = useQuery<ShopOption[]>({
     queryKey: ["admin", "shops", "list"],
@@ -125,6 +191,20 @@ export default function AdminShopReports() {
     return format(date, "dd.MM.yyyy");
   };
 
+  const formatCurrency = (value: string | number | null | undefined) => `${formatNumber(value)} ₸`;
+
+  const getLineTotal = (
+    items: { line_total: string | number; [key: string]: any }[],
+    predicate: (item: any) => boolean
+  ) =>
+    items.reduce((sum, item) => (predicate(item) ? sum + Number(item.line_total ?? 0) : sum), 0);
+
+  const getQuantityTotal = (
+    items: { quantity: string | number; [key: string]: any }[],
+    predicate: (item: any) => boolean
+  ) =>
+    items.reduce((sum, item) => (predicate(item) ? sum + Number(item.quantity ?? 0) : sum), 0);
+
   const debtOrders = useMemo(() => {
     if (!selectedDebtDay || !report) return [];
     return (report.deliveries || []).filter((delivery) => {
@@ -133,6 +213,11 @@ export default function AdminShopReports() {
       return deliveryDate === selectedDebtDay;
     });
   }, [report, selectedDebtDay]);
+
+  const debtDays = useMemo(
+    () => (report?.days || []).filter((day) => Number(day.debt_total ?? 0) > 0),
+    [report]
+  );
 
   const handleSubmit = () => {
     if (!selectedShopId) {
@@ -155,6 +240,139 @@ export default function AdminShopReports() {
   };
 
   const selectedShopName = report?.shop_name || shops.find((shop) => shop.id === Number(selectedShopId))?.name;
+
+  const handleViewDetail = async (row: ShopDocumentRow) => {
+    const key = `${row.type}-${row.id}`;
+    setActiveRowKey(key);
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetail(null);
+
+    try {
+      if (row.type === "delivery" || row.type === "bonus") {
+        const data = await api.getShopOrderDetail(row.id);
+        setDetail({ type: row.type, data });
+      } else {
+        const data = await api.getShopReturnDetail(row.id);
+        setDetail({ type: row.type, data });
+      }
+    } catch (err) {
+      setDetailOpen(false);
+      const message = err instanceof Error ? err.message : "Не удалось загрузить детали";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    } finally {
+      setDetailLoading(false);
+      setActiveRowKey(null);
+    }
+  };
+
+  const handleDetailOpenChange = (open: boolean) => {
+    setDetailOpen(open);
+    if (!open) {
+      setDetail(null);
+    }
+  };
+
+  const detailTitle = detail?.type === "return_from_shop"
+    ? "Детали возврата"
+    : detail?.type === "bonus"
+    ? "Детали бонусов"
+    : "Детали выдачи";
+
+  const renderDetailContent = () => {
+    if (detailLoading) {
+      return <div className="py-6 text-center text-muted-foreground">Загрузка...</div>;
+    }
+
+    if (!detail) {
+      return <div className="py-6 text-center text-muted-foreground">Нет данных</div>;
+    }
+
+    if (detail.type === "return_from_shop") {
+      const data = detail.data;
+      const total = getQuantityTotal(data.items, () => true);
+      return (
+        <div className="space-y-4">
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Магазин: {data.shop_name}</p>
+            <p>Дата: {formatDateTime(data.created_at)}</p>
+            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Товар</TableHead>
+                  <TableHead className="w-24">Кол-во</TableHead>
+                  <TableHead className="w-28">Цена</TableHead>
+                  <TableHead className="w-32">Сумма</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.items.map((item) => (
+                  <TableRow key={item.product_id}>
+                    <TableCell>{item.product_name}</TableCell>
+                    <TableCell>{formatNumber(item.quantity)}</TableCell>
+                    <TableCell>{formatCurrency(item.price)}</TableCell>
+                    <TableCell>{formatCurrency(item.line_total)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Всего: {formatNumber(total)} шт.</p>
+            <p>Сумма возврата: {formatCurrency(data.total_amount)}</p>
+          </div>
+        </div>
+      );
+    }
+
+    const data = detail.data;
+    const totalQuantity = getQuantityTotal(data.items, (item) => !item.is_return);
+    return (
+      <div className="space-y-4">
+        <div className="text-sm text-muted-foreground space-y-1">
+          <p>Магазин: {data.shop_name}</p>
+          <p>Дата: {formatDateTime(data.created_at)}</p>
+          {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+        </div>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Товар</TableHead>
+                <TableHead className="w-24">Кол-во</TableHead>
+                <TableHead className="w-28">Цена</TableHead>
+                <TableHead className="w-24 text-center">Бонус</TableHead>
+                <TableHead className="w-24 text-center">Возврат</TableHead>
+                <TableHead className="w-32">Сумма</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.items.map((item, index) => (
+                <TableRow key={`${item.product_name}-${index}`}>
+                  <TableCell>{item.product_name}</TableCell>
+                  <TableCell>{formatNumber(item.quantity)}</TableCell>
+                  <TableCell>{formatCurrency(item.price)}</TableCell>
+                  <TableCell className="text-center">{item.is_bonus ? "Да" : "Нет"}</TableCell>
+                  <TableCell className="text-center">{item.is_return ? "Да" : "Нет"}</TableCell>
+                  <TableCell>{formatCurrency(item.line_total)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="text-sm text-muted-foreground space-y-1">
+          <p>Всего товаров: {formatNumber(totalQuantity)} шт.</p>
+          <p>Сумма заказа: {formatCurrency(data.payment?.total_amount ?? data.total_goods_amount)}</p>
+          <p>Сумма возврата: {formatCurrency(data.payment?.returns_amount ?? data.total_return_amount)}</p>
+          <p>Сумма бонусов: {formatCurrency(data.total_bonus_amount ?? getLineTotal(data.items, (item) => item.is_bonus))}</p>
+          <p>Долг: {formatCurrency(data.payment?.debt_amount ?? 0)}</p>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -323,8 +541,18 @@ export default function AdminShopReports() {
                         <TableCell className="text-right">{formatNumber(row.amount)}</TableCell>
                         <TableCell>{row.manager_name}</TableCell>
                         <TableCell className="text-center">
-                          <Button variant="ghost" size="icon" aria-label="Подробнее">
-                            <Eye className="h-4 w-4" />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Подробнее"
+                            onClick={() => handleViewDetail(row)}
+                            disabled={activeRowKey === `${row.type}-${row.id}` && detailLoading}
+                          >
+                            {activeRowKey === `${row.type}-${row.id}` && detailLoading ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Eye className="h-4 w-4" />
+                            )}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -342,7 +570,7 @@ export default function AdminShopReports() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {report.days.map((day) => (
+                      {debtDays.map((day) => (
                         <TableRow key={day.date}>
                           <TableCell>{formatDateOnly(day.date)}</TableCell>
                           <TableCell className="text-right">{formatNumber(day.debt_total)}</TableCell>
@@ -351,7 +579,10 @@ export default function AdminShopReports() {
                               variant="ghost"
                               size="icon"
                               aria-label="Подробнее"
-                              onClick={() => setSelectedDebtDay(day.date)}
+                              onClick={() => {
+                                setSelectedDebtDay(day.date);
+                                setDebtModalOpen(true);
+                              }}
                             >
                               <Eye className="h-4 w-4" />
                             </Button>
@@ -360,46 +591,83 @@ export default function AdminShopReports() {
                       ))}
                     </TableBody>
                   </Table>
-
-                  {selectedDebtDay && (
-                    <Card>
-                      <CardHeader>
-                        <CardTitle>Детализация долгов за {formatDateOnly(selectedDebtDay)}</CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        {debtOrders.length === 0 ? (
-                          <p className="text-sm text-muted-foreground">Нет заказов с долгами за выбранный день</p>
-                        ) : (
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Дата и время</TableHead>
-                                <TableHead className="text-right">Сумма заказа</TableHead>
-                                <TableHead className="text-right">Долг</TableHead>
-                                <TableHead>Менеджер</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {debtOrders.map((order) => (
-                                <TableRow key={`debt-${order.id}`}>
-                                  <TableCell>{formatDateTime(order.date)}</TableCell>
-                                  <TableCell className="text-right">{formatNumber(order.amount)}</TableCell>
-                                  <TableCell className="text-right">{formatNumber(order.debt_amount)}</TableCell>
-                                  <TableCell>{order.manager_name}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        )}
-                      </CardContent>
-                    </Card>
-                  )}
                 </>
               )}
             </div>
           ) : null}
         </CardContent>
       </Card>
+
+      <Dialog open={detailOpen} onOpenChange={handleDetailOpenChange}>
+        <DialogContent className="w-full max-w-[90vw] sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{detailTitle}</DialogTitle>
+          </DialogHeader>
+          {renderDetailContent()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={debtModalOpen}
+        onOpenChange={(open) => {
+          setDebtModalOpen(open);
+          if (!open) {
+            setSelectedDebtDay(null);
+          }
+        }}
+      >
+        <DialogContent className="w-full max-w-[90vw] sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {selectedDebtDay ? `Детализация долгов за ${formatDateOnly(selectedDebtDay)}` : "Долги"}
+            </DialogTitle>
+          </DialogHeader>
+          {selectedDebtDay ? (
+            debtOrders.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Нет заказов с долгами за выбранный день</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Дата и время</TableHead>
+                    <TableHead className="text-right">Сумма заказа</TableHead>
+                    <TableHead className="text-right">Долг</TableHead>
+                    <TableHead>Менеджер</TableHead>
+                    <TableHead className="w-[80px] text-center">Действия</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {debtOrders.map((order) => (
+                    <TableRow key={`debt-${order.id}`}>
+                      <TableCell>{formatDateTime(order.date)}</TableCell>
+                      <TableCell className="text-right">{formatNumber(order.amount)}</TableCell>
+                      <TableCell className="text-right">{formatNumber(order.debt_amount)}</TableCell>
+                      <TableCell>{order.manager_name}</TableCell>
+                      <TableCell className="text-center">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Подробнее"
+                          onClick={() => handleViewDetail({ ...order, type: "delivery" })}
+                          disabled={activeRowKey === `delivery-${order.id}` && detailLoading}
+                        >
+                          {activeRowKey === `delivery-${order.id}` && detailLoading ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )
+          ) : (
+            <p className="text-sm text-muted-foreground">Выберите день с долгами</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
