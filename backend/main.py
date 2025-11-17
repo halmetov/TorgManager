@@ -11,7 +11,7 @@ import secrets
 import models
 import schemas
 from database import engine, get_db
-from sqlalchemy import inspect, text, bindparam, func, literal
+from sqlalchemy import inspect, text, bindparam, func, literal, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from passlib.context import CryptContext
 import jwt
@@ -1245,8 +1245,8 @@ def _fetch_shop_returns(
 
 
 def _get_day_bounds(target_date: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(target_date, time_type.min)
-    end = start + timedelta(days=1)
+    start = datetime.combine(target_date, time_type.min).replace(tzinfo=timezone.utc)
+    end = datetime.combine(target_date, time_type.max).replace(tzinfo=timezone.utc)
     return start, end
 
 
@@ -1266,7 +1266,6 @@ def _build_manager_daily_report(
 
     start, end = _get_day_bounds(report_date)
 
-    dispatch_status = func.coalesce(models.Dispatch.status, literal("pending"))
     dispatch_timestamp = func.coalesce(models.Dispatch.accepted_at, models.Dispatch.created_at)
     dispatch_price_column = getattr(models.Dispatch, "price_at_time", None)
     dispatch_price_expr = (
@@ -1274,11 +1273,16 @@ def _build_manager_daily_report(
         * func.coalesce(dispatch_price_column or models.Dispatch.price, models.Dispatch.price, 0)
     )
 
+    accepted_dispatch_filter = or_(
+        models.Dispatch.status == "accepted",
+        models.Dispatch.accepted_at.isnot(None),
+    )
+
     received_qty_raw = (
         db.query(func.coalesce(func.sum(models.Dispatch.quantity), 0))
         .filter(models.Dispatch.manager_id == manager.id)
-        .filter(dispatch_status.in_(("sent", "accepted")))
-        .filter(dispatch_timestamp >= start, dispatch_timestamp < end)
+        .filter(accepted_dispatch_filter)
+        .filter(dispatch_timestamp >= start, dispatch_timestamp <= end)
         .scalar()
         or 0
     )
@@ -1286,8 +1290,8 @@ def _build_manager_daily_report(
     received_amount_raw = (
         db.query(func.coalesce(func.sum(dispatch_price_expr), 0))
         .filter(models.Dispatch.manager_id == manager.id)
-        .filter(dispatch_status.in_(("sent", "accepted")))
-        .filter(dispatch_timestamp >= start, dispatch_timestamp < end)
+        .filter(accepted_dispatch_filter)
+        .filter(dispatch_timestamp >= start, dispatch_timestamp <= end)
         .scalar()
         or 0
     )
