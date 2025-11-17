@@ -105,6 +105,7 @@ interface ShopReturnDetail {
   shop_id: number;
   shop_name: string;
   created_at: string;
+  total_quantity: string | number;
   total_amount: string | number;
   items: ShopReturnDetailItem[];
 }
@@ -290,7 +291,7 @@ export default function AdminShopReports() {
 
     if (detail.type === "return_from_shop") {
       const data = detail.data;
-      const total = getQuantityTotal(data.items, () => true);
+      const total = data.total_quantity ?? getQuantityTotal(data.items, () => true);
       return (
         <div className="space-y-4">
           <div className="text-sm text-muted-foreground space-y-1">

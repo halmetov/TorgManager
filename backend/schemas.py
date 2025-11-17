@@ -297,6 +297,7 @@ class ShopReturnDetail(BaseModel):
     shop_id: int
     shop_name: str
     created_at: datetime
+    total_quantity: Decimal
     total_amount: Decimal
     items: List[ShopReturnDetailItem]
 
@@ -320,6 +321,7 @@ class ShopReturnItemOut(BaseModel):
 class ShopReturnOut(BaseModel):
     id: int
     manager_id: int
+    manager_name: Optional[str] = None
     shop_id: int
     shop_name: str
     created_at: datetime
