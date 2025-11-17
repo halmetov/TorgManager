@@ -37,7 +37,7 @@ const items = [
 ];
 
 export function AdminSidebar() {
-  const { state } = useSidebar();
+  const { state, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
   const collapsed = state === "collapsed";
 
@@ -61,6 +61,11 @@ export function AdminSidebar() {
                     <NavLink
                       to={item.url}
                       end
+                      onClick={() => {
+                        if (isMobile) {
+                          setOpenMobile(false);
+                        }
+                      }}
                       className={({ isActive }) =>
                         isActive ? "bg-muted text-primary font-medium" : "hover:bg-muted/50"
                       }

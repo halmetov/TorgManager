@@ -47,6 +47,7 @@ interface ShopOrderItem {
   quantity: number;
   price?: number | null;
   is_bonus: boolean;
+  is_return: boolean;
 }
 
 interface ShopOrderPayment {
@@ -73,12 +74,12 @@ interface OrderFormItem {
   quantity: string;
   price: string;
   is_bonus: boolean;
+  is_return: boolean;
 }
 
 interface ShopOrderCreatePayload {
   shop_id: number;
-  returns: { amount: number };
-  items: { product_id: number; quantity: number; price?: number | null; is_bonus: boolean }[];
+  items: { product_id: number; quantity: number; price?: number | null; is_bonus: boolean; is_return: boolean }[];
   paid_amount: number;
 }
 
@@ -96,7 +97,6 @@ export default function ManagerOrders() {
 
   const [shopId, setShopId] = useState("");
   const [items, setItems] = useState<OrderFormItem[]>([]);
-  const [returnsAmountInput, setReturnsAmountInput] = useState("0");
   const [productSearch, setProductSearch] = useState("");
   const [productOpen, setProductOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ManagerStockItem | null>(null);
@@ -107,6 +107,12 @@ export default function ManagerOrders() {
   const [bonusSelectedProduct, setBonusSelectedProduct] = useState<ManagerStockItem | null>(null);
   const [bonusQuantityInput, setBonusQuantityInput] = useState("");
   const [bonusPriceInput, setBonusPriceInput] = useState("");
+  const [returnItems, setReturnItems] = useState<OrderFormItem[]>([]);
+  const [returnProductSearch, setReturnProductSearch] = useState("");
+  const [returnProductOpen, setReturnProductOpen] = useState(false);
+  const [returnSelectedProduct, setReturnSelectedProduct] = useState<ManagerStockItem | null>(null);
+  const [returnQuantityInput, setReturnQuantityInput] = useState("");
+  const [returnPriceInput, setReturnPriceInput] = useState("");
   const [detailOrder, setDetailOrder] = useState<ShopOrder | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [pendingOrderPayload, setPendingOrderPayload] = useState<ShopOrderCreatePayload | null>(null);
@@ -191,6 +197,12 @@ export default function ManagerOrders() {
     return availableProducts.filter((product) => product.name.toLowerCase().includes(term));
   }, [availableProducts, bonusProductSearch]);
 
+  const filteredReturnProducts = useMemo(() => {
+    const term = returnProductSearch.trim().toLowerCase();
+    if (!term) return stock;
+    return stock.filter((product) => product.name.toLowerCase().includes(term));
+  }, [returnProductSearch, stock]);
+
   const resetGoodsSelection = () => {
     setSelectedProduct(null);
     setQuantityInput("");
@@ -207,6 +219,14 @@ export default function ManagerOrders() {
     setBonusProductOpen(false);
   };
 
+  const resetReturnSelection = () => {
+    setReturnSelectedProduct(null);
+    setReturnQuantityInput("");
+    setReturnPriceInput("");
+    setReturnProductSearch("");
+    setReturnProductOpen(false);
+  };
+
   const handleSelectGoodsProduct = (product: ManagerStockItem) => {
     setSelectedProduct(product);
     setProductSearch(product.name);
@@ -219,6 +239,13 @@ export default function ManagerOrders() {
     setBonusProductSearch(product.name);
     setBonusPriceInput(product.price != null ? String(product.price) : "");
     setBonusProductOpen(false);
+  };
+
+  const handleSelectReturnProduct = (product: ManagerStockItem) => {
+    setReturnSelectedProduct(product);
+    setReturnProductSearch(product.name);
+    setReturnPriceInput(product.price != null ? String(product.price) : "");
+    setReturnProductOpen(false);
   };
 
   const addGoodsItem = () => {
@@ -280,6 +307,7 @@ export default function ManagerOrders() {
           quantity: String(quantityValue),
           price: priceNumber === null ? "" : String(priceNumber),
           is_bonus: false,
+          is_return: false,
         },
       ];
     });
@@ -346,11 +374,61 @@ export default function ManagerOrders() {
           quantity: String(quantityValue),
           price: priceNumber === null ? "" : String(priceNumber),
           is_bonus: true,
+          is_return: false,
         },
       ];
     });
 
     resetBonusSelection();
+  };
+
+  const addReturnItem = () => {
+    if (!returnSelectedProduct) {
+      toast({ title: "Ошибка", description: "Выберите товар для возврата", variant: "destructive" });
+      return;
+    }
+
+    const quantityValue = Number(returnQuantityInput.trim());
+    if (!returnQuantityInput.trim() || Number.isNaN(quantityValue) || quantityValue <= 0) {
+      toast({ title: "Ошибка", description: "Количество должно быть больше нуля", variant: "destructive" });
+      return;
+    }
+
+    const priceValue = returnPriceInput.trim();
+    const priceNumber = priceValue === "" ? null : Number(priceValue);
+    if (priceValue !== "" && (Number.isNaN(priceNumber) || priceNumber < 0)) {
+      toast({ title: "Ошибка", description: "Цена должна быть неотрицательной", variant: "destructive" });
+      return;
+    }
+
+    setReturnItems((current) => {
+      const index = current.findIndex(
+        (item) => item.product_id === returnSelectedProduct.product_id && item.is_return,
+      );
+      if (index >= 0) {
+        const next = [...current];
+        next[index] = {
+          ...next[index],
+          quantity: String(Number(next[index].quantity) + quantityValue),
+          price: priceNumber === null ? next[index].price : String(priceNumber),
+        };
+        return next;
+      }
+
+      return [
+        ...current,
+        {
+          product_id: returnSelectedProduct.product_id,
+          product_name: returnSelectedProduct.name,
+          quantity: String(quantityValue),
+          price: priceNumber === null ? "" : String(priceNumber),
+          is_bonus: false,
+          is_return: true,
+        },
+      ];
+    });
+
+    resetReturnSelection();
   };
 
   const handleQuantityChange = (productId: number, isBonus: boolean, value: string) => {
@@ -375,8 +453,25 @@ export default function ManagerOrders() {
     );
   };
 
+  const handleReturnQuantityChange = (productId: number, value: string) => {
+    setReturnItems((current) =>
+      current.map((item) => (item.product_id === productId ? { ...item, quantity: value } : item)),
+    );
+  };
+
+  const handleReturnPriceChange = (productId: number, value: string) => {
+    setReturnItems((current) =>
+      current.map((item) => (item.product_id === productId ? { ...item, price: value } : item)),
+    );
+  };
+
+  const handleRemoveReturnItem = (productId: number) => {
+    setReturnItems((current) => current.filter((item) => item.product_id !== productId));
+  };
+
   const goodsItemsList = useMemo(() => items.filter((item) => !item.is_bonus), [items]);
   const bonusItemsList = useMemo(() => items.filter((item) => item.is_bonus), [items]);
+  const returnItemsList = useMemo(() => returnItems, [returnItems]);
 
   const calculateItemsTotal = useCallback(
     (list: OrderFormItem[]) => {
@@ -432,18 +527,15 @@ export default function ManagerOrders() {
     [bonusItemsList]
   );
 
-  const returnsAmountValue = useMemo(() => {
-    if (!returnsAmountInput.trim()) {
-      return 0;
-    }
-    const parsed = Number(returnsAmountInput);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  }, [returnsAmountInput]);
+  const returnsAmount = useMemo(
+    () => calculateItemsTotal(returnItemsList),
+    [calculateItemsTotal, returnItemsList],
+  );
 
   const payableAmount = useMemo(() => {
-    const diff = totalGoodsAmount - returnsAmountValue;
+    const diff = totalGoodsAmount - returnsAmount;
     return diff > 0 ? diff : 0;
-  }, [returnsAmountValue, totalGoodsAmount]);
+  }, [returnsAmount, totalGoodsAmount]);
 
   const orderMutation = useMutation({
     mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
@@ -453,7 +545,8 @@ export default function ManagerOrders() {
       setItems([]);
       resetGoodsSelection();
       resetBonusSelection();
-      setReturnsAmountInput("0");
+      setReturnItems([]);
+      resetReturnSelection();
       setPendingOrderPayload(null);
       setPendingSummary(null);
       setPaymentDialogOpen(false);
@@ -494,14 +587,12 @@ export default function ManagerOrders() {
       return;
     }
 
-    if (items.length === 0) {
-      toast({ title: "Ошибка", description: "Добавьте хотя бы один товар", variant: "destructive" });
-      return;
-    }
-
-    const returnsAmount = returnsAmountInput.trim() === "" ? 0 : Number(returnsAmountInput);
-    if (Number.isNaN(returnsAmount) || returnsAmount < 0) {
-      toast({ title: "Ошибка", description: "Сумма возврата должна быть неотрицательной", variant: "destructive" });
+    if (items.length === 0 && returnItems.length === 0) {
+      toast({
+        title: "Ошибка",
+        description: "Добавьте хотя бы один товар или позицию возврата",
+        variant: "destructive",
+      });
       return;
     }
 
@@ -514,6 +605,22 @@ export default function ManagerOrders() {
       }
 
       aggregated.set(item.product_id, (aggregated.get(item.product_id) ?? 0) + quantityNumber);
+
+      if (item.price.trim() !== "") {
+        const priceNumber = Number(item.price.trim());
+        if (Number.isNaN(priceNumber) || priceNumber < 0) {
+          toast({ title: "Ошибка", description: "Цена должна быть неотрицательной", variant: "destructive" });
+          return;
+        }
+      }
+    }
+
+    for (const item of returnItems) {
+      const quantityNumber = Number(item.quantity.trim());
+      if (item.quantity.trim() === "" || Number.isNaN(quantityNumber) || quantityNumber <= 0) {
+        toast({ title: "Ошибка", description: "Количество должно быть больше нуля", variant: "destructive" });
+        return;
+      }
 
       if (item.price.trim() !== "") {
         const priceNumber = Number(item.price.trim());
@@ -538,29 +645,43 @@ export default function ManagerOrders() {
       }
     }
 
-    const payloadItems = items.map((item) => {
-      const quantityNumber = Number(item.quantity.trim());
-      const priceValue = item.price.trim() === "" ? null : Number(item.price.trim());
-      return {
-        product_id: item.product_id,
-        quantity: quantityNumber,
-        price: priceValue,
-        is_bonus: item.is_bonus,
-      };
-    });
+    const payloadItems = [
+      ...items.map((item) => {
+        const quantityNumber = Number(item.quantity.trim());
+        const priceValue = item.price.trim() === "" ? null : Number(item.price.trim());
+        return {
+          product_id: item.product_id,
+          quantity: quantityNumber,
+          price: priceValue,
+          is_bonus: item.is_bonus,
+          is_return: false,
+        };
+      }),
+      ...returnItems.map((item) => {
+        const quantityNumber = Number(item.quantity.trim());
+        const priceValue = item.price.trim() === "" ? null : Number(item.price.trim());
+        return {
+          product_id: item.product_id,
+          quantity: quantityNumber,
+          price: priceValue,
+          is_bonus: false,
+          is_return: true,
+        };
+      }),
+    ];
 
     const goodsAmount = totalGoodsAmount;
-    const payable = goodsAmount - returnsAmount > 0 ? goodsAmount - returnsAmount : 0;
+    const returnsAmountValue = returnsAmount;
+    const payable = goodsAmount - returnsAmountValue > 0 ? goodsAmount - returnsAmountValue : 0;
 
     const payload: ShopOrderCreatePayload = {
       shop_id: Number(shopId),
-      returns: { amount: returnsAmount },
       items: payloadItems,
       paid_amount: payable,
     };
 
     setPendingOrderPayload(payload);
-    setPendingSummary({ totalGoodsAmount: goodsAmount, returnsAmount, payableAmount: payable });
+    setPendingSummary({ totalGoodsAmount: goodsAmount, returnsAmount: returnsAmountValue, payableAmount: payable });
     setPaidAmountInput(payable ? payable.toFixed(2) : "0");
     setPaymentError(null);
     setPaymentDialogOpen(true);
@@ -652,6 +773,12 @@ export default function ManagerOrders() {
     Number.isNaN(Number(bonusQuantityInput)) ||
     Number(bonusQuantityInput) <= 0;
 
+  const isReturnAddDisabled =
+    !returnSelectedProduct ||
+    !returnQuantityInput.trim() ||
+    Number.isNaN(Number(returnQuantityInput)) ||
+    Number(returnQuantityInput) <= 0;
+
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Выдача в магазины</h1>
@@ -665,36 +792,21 @@ export default function ManagerOrders() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Магазин</Label>
-                <Select value={shopId} onValueChange={setShopId} disabled={shopsLoading || shops.length === 0}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Выберите магазин" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-background z-50">
-                    {shops.map((shop) => (
-                      <SelectItem key={shop.id} value={String(shop.id)}>
-                        {shop.name}
-                        {shop.address ? ` — ${shop.address}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Возврат (сумма)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={returnsAmountInput}
-                  onChange={(event) => setReturnsAmountInput(event.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Возврат уменьшает сумму к оплате по заказу
-                </p>
-              </div>
+            <div className="space-y-2">
+              <Label>Магазин</Label>
+              <Select value={shopId} onValueChange={setShopId} disabled={shopsLoading || shops.length === 0}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите магазин" />
+                </SelectTrigger>
+                <SelectContent className="bg-background z-50">
+                  {shops.map((shop) => (
+                    <SelectItem key={shop.id} value={String(shop.id)}>
+                      {shop.name}
+                      {shop.address ? ` — ${shop.address}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-8">
@@ -1141,6 +1253,222 @@ export default function ManagerOrders() {
               </div>
             </div>
 
+            <div className="space-y-3 border-t pt-4">
+              <div>
+                <h3 className="text-lg font-semibold">Возврат</h3>
+                <p className="text-sm text-muted-foreground">
+                  Товары, которые магазин возвращает. Сумма возврата уменьшает оплату, остаток менеджера не
+                  уменьшается.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Popover open={returnProductOpen} onOpenChange={setReturnProductOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      role="combobox"
+                      className="w-full justify-between"
+                      onClick={() => setReturnProductOpen((prev) => !prev)}
+                    >
+                      {returnSelectedProduct ? returnSelectedProduct.name : "Выберите возврат"}
+                      <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[min(320px,90vw)] p-0" align="start">
+                    <Command>
+                      <CommandInput
+                        placeholder="Поиск товара..."
+                        value={returnProductSearch}
+                        onValueChange={setReturnProductSearch}
+                      />
+                      <CommandList>
+                        <CommandEmpty>Товар не найден</CommandEmpty>
+                        <CommandGroup>
+                          {filteredReturnProducts.map((product) => (
+                            <CommandItem
+                              key={product.product_id}
+                              value={String(product.product_id)}
+                              onSelect={() => handleSelectReturnProduct(product)}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  returnSelectedProduct?.product_id === product.product_id
+                                    ? "opacity-100"
+                                    : "opacity-0",
+                                )}
+                              />
+                              <span className="flex-1">{product.name}</span>
+                              <span className="text-xs text-muted-foreground">Остаток: {product.quantity}</span>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                <Input
+                  type="number"
+                  min={0}
+                  value={returnQuantityInput}
+                  onChange={(event) => setReturnQuantityInput(event.target.value)}
+                  placeholder="Кол-во"
+                  className="w-full sm:w-24"
+                />
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={returnPriceInput}
+                  onChange={(event) => setReturnPriceInput(event.target.value)}
+                  placeholder="Цена"
+                  className="w-full sm:w-28"
+                />
+                <Button type="button" onClick={addReturnItem} disabled={isReturnAddDisabled}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Товар</TableHead>
+                    <TableHead className="w-24">Доступно</TableHead>
+                    <TableHead className="w-28">Количество</TableHead>
+                    <TableHead className="w-28">Цена</TableHead>
+                    <TableHead className="w-32">Сумма</TableHead>
+                    <TableHead className="w-12" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {returnItemsList.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-muted-foreground">
+                        Товары на возврат не выбраны
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    returnItemsList.map((item) => {
+                      const stockItem = stockMap.get(item.product_id);
+                      const quantity = Number(item.quantity || 0);
+                      const priceValue =
+                        item.price.trim() !== ""
+                          ? Number(item.price)
+                          : stockItem?.price ?? 0;
+                      const lineTotal =
+                        Number.isNaN(quantity) || Number.isNaN(priceValue)
+                          ? 0
+                          : quantity * priceValue;
+                      return (
+                        <TableRow key={`return-${item.product_id}`}>
+                          <TableCell>{item.product_name}</TableCell>
+                          <TableCell>{stockItem?.quantity ?? 0}</TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min={0}
+                              value={item.quantity}
+                              onChange={(event) =>
+                                handleReturnQuantityChange(item.product_id, event.target.value)
+                              }
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={item.price}
+                              placeholder="—"
+                              onChange={(event) =>
+                                handleReturnPriceChange(item.product_id, event.target.value)
+                              }
+                            />
+                          </TableCell>
+                          <TableCell>{currencyFormatter.format(lineTotal)}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleRemoveReturnItem(item.product_id)}
+                              aria-label={`Удалить ${item.product_name}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {returnItemsList.length === 0 ? (
+                <div className="rounded-lg border p-4 text-center text-muted-foreground">
+                  Товары на возврат не выбраны
+                </div>
+              ) : (
+                returnItemsList.map((item) => {
+                  const stockItem = stockMap.get(item.product_id);
+                  const quantity = Number(item.quantity || 0);
+                  const priceValue =
+                    item.price.trim() !== ""
+                      ? Number(item.price)
+                      : stockItem?.price ?? 0;
+                  const lineTotal =
+                    Number.isNaN(quantity) || Number.isNaN(priceValue) ? 0 : quantity * priceValue;
+                  return (
+                    <div key={`return-mobile-${item.product_id}`} className="rounded-lg border p-4 space-y-3 bg-card">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h3 className="text-base font-semibold leading-tight">{item.product_name}</h3>
+                          <p className="text-sm text-muted-foreground">Остаток: {stockItem?.quantity ?? 0}</p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveReturnItem(item.product_id)}
+                          aria-label={`Удалить ${item.product_name}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <p className="text-xs uppercase text-muted-foreground">Количество</p>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={item.quantity}
+                            onChange={(event) => handleReturnQuantityChange(item.product_id, event.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs uppercase text-muted-foreground">Цена</p>
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={item.price}
+                            placeholder="—"
+                            onChange={(event) => handleReturnPriceChange(item.product_id, event.target.value)}
+                          />
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          Сумма: {currencyFormatter.format(lineTotal)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs uppercase text-muted-foreground">Обычные товары</p>
@@ -1154,7 +1482,7 @@ export default function ManagerOrders() {
               </div>
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs uppercase text-muted-foreground">Возврат</p>
-                <p className="text-sm">Сумма: {currencyFormatter.format(returnsAmountValue)}</p>
+                <p className="text-sm">Сумма: {currencyFormatter.format(returnsAmount)}</p>
               </div>
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs uppercase text-muted-foreground">К оплате</p>
@@ -1272,6 +1600,7 @@ export default function ManagerOrders() {
                       <TableHead className="w-32">Количество</TableHead>
                       <TableHead className="w-32">Цена</TableHead>
                       <TableHead className="w-24 text-center">Бонус</TableHead>
+                      <TableHead className="w-24 text-center">Возврат</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1281,6 +1610,7 @@ export default function ManagerOrders() {
                         <TableCell>{item.quantity}</TableCell>
                         <TableCell>{item.price ?? "—"}</TableCell>
                         <TableCell className="text-center">{item.is_bonus ? "Да" : "Нет"}</TableCell>
+                        <TableCell className="text-center">{item.is_return ? "Да" : "Нет"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

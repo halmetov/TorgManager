@@ -125,46 +125,6 @@ const numberFormatter = new Intl.NumberFormat("ru-RU", {
   maximumFractionDigits: 2,
 });
 
-interface ShopOption {
-  id: number;
-  name: string;
-  address?: string | null;
-}
-
-interface ShopDayStat {
-  date: string;
-  issued_total: string | number;
-  returns_total: string | number;
-  bonuses_total: string | number;
-  debt_total: string | number;
-}
-
-interface ShopDocumentRef {
-  id: number;
-  type: "delivery" | "return_from_shop";
-  date: string;
-  shop_name: string;
-  manager_name: string;
-}
-
-interface AdminShopPeriodSummary {
-  issued_total: string | number;
-  returns_total: string | number;
-  bonuses_total: string | number;
-  debt_total: string | number;
-}
-
-interface AdminShopPeriodReport {
-  shop_id: number;
-  shop_name: string;
-  date_from: string;
-  date_to: string;
-  summary: AdminShopPeriodSummary;
-  days: ShopDayStat[];
-  deliveries: ShopDocumentRef[];
-  returns_from_shop: ShopDocumentRef[];
-}
-
 export default function AdminReports() {
   const { toast } = useToast();
   const [selectedManagerId, setSelectedManagerId] = useState<string>("");
@@ -176,25 +136,10 @@ export default function AdminReports() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
   const [currentDetailType, setCurrentDetailType] = useState<MovementType | null>(null);
-  const [selectedShopId, setSelectedShopId] = useState<string>("");
-  const [shopDateFrom, setShopDateFrom] = useState<Date | null>(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1);
-  });
-  const [shopDateTo, setShopDateTo] = useState<Date | null>(() => new Date());
-  const [shopFromCalendarOpen, setShopFromCalendarOpen] = useState(false);
-  const [shopToCalendarOpen, setShopToCalendarOpen] = useState(false);
-  const [shopDayModalOpen, setShopDayModalOpen] = useState(false);
-  const [selectedShopDay, setSelectedShopDay] = useState<string | null>(null);
 
   const { data: managers = [], isLoading: managersLoading } = useQuery<ManagerOption[]>({
     queryKey: ["admin", "managers"],
     queryFn: () => api.getManagersList(),
-  });
-
-  const { data: shops = [], isLoading: shopsLoading } = useQuery<ShopOption[]>({
-    queryKey: ["admin", "shops"],
-    queryFn: () => api.getShops() as Promise<ShopOption[]>,
   });
 
   useEffect(() => {
@@ -204,27 +149,10 @@ export default function AdminReports() {
     setSelectedManagerId(String(managers[0].id));
   }, [managers, selectedManagerId]);
 
-  useEffect(() => {
-    if (!shops.length || selectedShopId) {
-      return;
-    }
-    setSelectedShopId(String(shops[0].id));
-  }, [shops, selectedShopId]);
-
   const formattedDate = useMemo(() => {
     if (!selectedDate) return "";
     return format(selectedDate, "yyyy-MM-dd");
   }, [selectedDate]);
-
-  const formattedShopDateFrom = useMemo(() => {
-    if (!shopDateFrom) return "";
-    return format(shopDateFrom, "yyyy-MM-dd");
-  }, [shopDateFrom]);
-
-  const formattedShopDateTo = useMemo(() => {
-    if (!shopDateTo) return "";
-    return format(shopDateTo, "yyyy-MM-dd");
-  }, [shopDateTo]);
 
   const managerIdNumber = selectedManagerId ? Number(selectedManagerId) : null;
 
@@ -244,46 +172,11 @@ export default function AdminReports() {
     enabled: Boolean(managerIdNumber && formattedDate),
   });
 
-  const {
-    data: shopReport,
-    isLoading: shopReportLoading,
-    isFetching: shopReportFetching,
-    error: shopReportError,
-  } = useQuery<AdminShopPeriodReport | null>({
-    queryKey: [
-      "admin",
-      "shop-report",
-      selectedShopId ? Number(selectedShopId) : null,
-      formattedShopDateFrom,
-      formattedShopDateTo,
-    ],
-    queryFn: () => {
-      if (!selectedShopId || !formattedShopDateFrom || !formattedShopDateTo) {
-        return Promise.resolve(null);
-      }
-      return api.getAdminShopPeriodReport(
-        Number(selectedShopId),
-        formattedShopDateFrom,
-        formattedShopDateTo
-      );
-    },
-    enabled: Boolean(selectedShopId && formattedShopDateFrom && formattedShopDateTo),
-  });
-
   useEffect(() => {
     if (!error) return;
     const message = error instanceof Error ? error.message : "Не удалось загрузить отчет";
     toast({ title: "Ошибка", description: message, variant: "destructive" });
   }, [error, toast]);
-
-  useEffect(() => {
-    if (!shopReportError) return;
-    const message =
-      shopReportError instanceof Error
-        ? shopReportError.message
-        : "Не удалось загрузить отчет по магазину";
-    toast({ title: "Ошибка", description: message, variant: "destructive" });
-  }, [shopReportError, toast]);
 
   const summaryCards = useMemo(() => {
     if (!report) {
@@ -302,23 +195,6 @@ export default function AdminReports() {
     ];
   }, [report]);
 
-  const shopSummaryCards = useMemo(() => {
-    if (!shopReport) {
-      return [
-        { label: "Выдано", value: 0 },
-        { label: "Возвраты", value: 0 },
-        { label: "Бонусы", value: 0 },
-        { label: "Долг", value: 0 },
-      ];
-    }
-    return [
-      { label: "Выдано", value: shopReport.summary.issued_total ?? 0 },
-      { label: "Возвраты", value: shopReport.summary.returns_total ?? 0 },
-      { label: "Бонусы", value: shopReport.summary.bonuses_total ?? 0 },
-      { label: "Долг", value: shopReport.summary.debt_total ?? 0 },
-    ];
-  }, [shopReport]);
-
   const movementData = useMemo(() => {
     if (!report) return [] as MovementRow[];
     if (movementType === "delivery") return report.deliveries;
@@ -326,48 +202,11 @@ export default function AdminReports() {
     return report.returns_from_shops;
   }, [movementType, report]);
 
-  const shopReportBusy = (shopReportLoading || shopReportFetching) && !shopReport;
-
-  const shopDayDocuments = useMemo(() => {
-    if (!selectedShopDay || !shopReport) {
-      return { deliveries: [] as ShopDocumentRef[], returns: [] as ShopDocumentRef[] };
-    }
-    const target = selectedShopDay;
-    const deliveries = shopReport.deliveries.filter((doc) => {
-      return format(new Date(doc.date), "yyyy-MM-dd") === target;
-    });
-    const returns = shopReport.returns_from_shop.filter((doc) => {
-      return format(new Date(doc.date), "yyyy-MM-dd") === target;
-    });
-    return { deliveries, returns };
-  }, [selectedShopDay, shopReport]);
-
   const renderShopName = (row: MovementRow) => {
     if (row.shop_name) return row.shop_name;
     if (movementType === "return_to_main") return "Главный склад";
     return "—";
   };
-
-  const handleShopDayOpen = (day: string) => {
-    setSelectedShopDay(day);
-    setShopDayModalOpen(true);
-  };
-
-  const handleShopDayModalChange = (open: boolean) => {
-    setShopDayModalOpen(open);
-    if (!open) {
-      setSelectedShopDay(null);
-    }
-  };
-
-  const formatShopDay = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("ru-RU");
-
-  const buildDocumentRow = (doc: ShopDocumentRef): MovementRow => ({
-    id: doc.id,
-    type: doc.type,
-    shop_name: doc.shop_name,
-    time: doc.date,
-  });
 
   const renderTime = (iso: string) => {
     const date = new Date(iso);
@@ -733,226 +572,6 @@ export default function AdminReports() {
           )}
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader className="space-y-2">
-          <CardTitle>Отчет по магазинам</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Сводка по выдачам, возвратам, бонусам и долгам выбранного магазина за период
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            <div className="space-y-2">
-              <Label className="text-sm font-medium text-muted-foreground">Магазин</Label>
-              <Select
-                value={selectedShopId}
-                onValueChange={setSelectedShopId}
-                disabled={shopsLoading || shops.length === 0}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={shopsLoading ? "Загрузка..." : "Выберите магазин"} />
-                </SelectTrigger>
-                <SelectContent className="bg-background z-50">
-                  {shops.map((shop) => (
-                    <SelectItem key={shop.id} value={String(shop.id)}>
-                      {shop.name}
-                      {shop.address ? ` — ${shop.address}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-sm font-medium text-muted-foreground">Дата от</Label>
-              <Popover open={shopFromCalendarOpen} onOpenChange={setShopFromCalendarOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className={cn(
-                      "w-full justify-start text-left font-normal",
-                      !shopDateFrom && "text-muted-foreground"
-                    )}
-                  >
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {shopDateFrom ? format(shopDateFrom, "PPP") : "Выберите дату"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="start">
-                  <Calendar
-                    mode="single"
-                    selected={shopDateFrom ?? undefined}
-                    onSelect={(value) => {
-                      setShopDateFrom(value ?? null);
-                      setShopFromCalendarOpen(false);
-                    }}
-                    initialFocus
-                  />
-                </PopoverContent>
-              </Popover>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-sm font-medium text-muted-foreground">Дата до</Label>
-              <Popover open={shopToCalendarOpen} onOpenChange={setShopToCalendarOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className={cn(
-                      "w-full justify-start text-left font-normal",
-                      !shopDateTo && "text-muted-foreground"
-                    )}
-                  >
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {shopDateTo ? format(shopDateTo, "PPP") : "Выберите дату"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="start">
-                  <Calendar
-                    mode="single"
-                    selected={shopDateTo ?? undefined}
-                    onSelect={(value) => {
-                      setShopDateTo(value ?? null);
-                      setShopToCalendarOpen(false);
-                    }}
-                    initialFocus
-                  />
-                </PopoverContent>
-              </Popover>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {shopSummaryCards.map((card) => (
-              <Card key={card.label}>
-                <CardHeader>
-                  <CardTitle className="text-sm font-medium text-muted-foreground">{card.label}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-semibold">
-                    {shopReportBusy ? "—" : numberFormatter.format(Number(card.value ?? 0))}
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          {!selectedShopId || !formattedShopDateFrom || !formattedShopDateTo ? (
-            <div className="rounded-lg border p-4 text-center text-muted-foreground">
-              Выберите магазин и период для отчета
-            </div>
-          ) : shopReportBusy ? (
-            <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
-          ) : !shopReport || shopReport.days.length === 0 ? (
-            <div className="rounded-lg border p-4 text-center text-muted-foreground">Нет данных за выбранный период</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Дата</TableHead>
-                    <TableHead>Выдано</TableHead>
-                    <TableHead>Возвраты</TableHead>
-                    <TableHead>Бонусы</TableHead>
-                    <TableHead>Долг</TableHead>
-                    <TableHead className="w-16 text-right" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {shopReport.days.map((day) => {
-                    return (
-                    <TableRow key={day.date}>
-                      <TableCell>{formatShopDay(day.date)}</TableCell>
-                        <TableCell>{numberFormatter.format(Number(day.issued_total ?? 0))}</TableCell>
-                        <TableCell>{numberFormatter.format(Number(day.returns_total ?? 0))}</TableCell>
-                        <TableCell>{numberFormatter.format(Number(day.bonuses_total ?? 0))}</TableCell>
-                        <TableCell>{numberFormatter.format(Number(day.debt_total ?? 0))}</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Подробнее"
-                            onClick={() => handleShopDayOpen(day.date)}
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Dialog open={shopDayModalOpen} onOpenChange={handleShopDayModalChange}>
-        <DialogContent className="w-full max-w-[90vw] sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              Документы за {selectedShopDay ? formatShopDay(selectedShopDay) : ""}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <h4 className="text-sm font-semibold">Выдачи</h4>
-              {shopDayDocuments.deliveries.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Нет выдач</p>
-              ) : (
-                <ul className="space-y-2">
-                  {shopDayDocuments.deliveries.map((doc) => (
-                    <li key={`delivery-${doc.id}`} className="flex items-start justify-between gap-2">
-                      <div className="text-sm">
-                        <p className="font-medium leading-tight">{doc.shop_name}</p>
-                        {doc.manager_name ? (
-                          <p className="text-xs text-muted-foreground">Менеджер: {doc.manager_name}</p>
-                        ) : null}
-                        <p className="text-xs text-muted-foreground">{formatDateTime(doc.date)}</p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Подробнее"
-                        onClick={() => handleViewDetails(buildDocumentRow(doc))}
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold">Возвраты</h4>
-              {shopDayDocuments.returns.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Нет возвратов</p>
-              ) : (
-                <ul className="space-y-2">
-                  {shopDayDocuments.returns.map((doc) => (
-                    <li key={`return-${doc.id}`} className="flex items-start justify-between gap-2">
-                      <div className="text-sm">
-                        <p className="font-medium leading-tight">{doc.shop_name}</p>
-                        {doc.manager_name ? (
-                          <p className="text-xs text-muted-foreground">Менеджер: {doc.manager_name}</p>
-                        ) : null}
-                        <p className="text-xs text-muted-foreground">{formatDateTime(doc.date)}</p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Подробнее"
-                        onClick={() => handleViewDetails(buildDocumentRow(doc))}
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={detailOpen} onOpenChange={handleDetailOpenChange}>
         <DialogContent className="w-full max-w-[90vw] sm:max-w-2xl">
