@@ -194,6 +194,10 @@ class IncomingDetail(BaseModel):
     items: List[IncomingDetailItem]
 
 
+class OrderReturnBlock(BaseModel):
+    amount: condecimal(ge=0)
+
+
 class ShopOrderItemCreate(BaseModel):
     product_id: int
     quantity: condecimal(gt=0)
@@ -201,14 +205,11 @@ class ShopOrderItemCreate(BaseModel):
     is_bonus: bool = False
 
 
-class ShopOrderPaymentData(BaseModel):
-    paid_amount: condecimal(ge=0)
-
-
 class ShopOrderCreate(BaseModel):
     shop_id: int
+    returns: Optional[OrderReturnBlock] = None
     items: List[ShopOrderItemCreate]
-    payment: Optional[ShopOrderPaymentData] = None
+    paid_amount: condecimal(ge=0)
 
 
 class ShopOrderItemOut(BaseModel):
@@ -220,7 +221,9 @@ class ShopOrderItemOut(BaseModel):
 
 
 class ShopOrderPaymentOut(BaseModel):
-    total_amount: Decimal
+    total_goods_amount: Decimal
+    returns_amount: Decimal
+    payable_amount: Decimal
     paid_amount: Decimal
     debt_amount: Decimal
 
@@ -252,8 +255,11 @@ class ShopOrderDetail(BaseModel):
     shop_name: str
     created_at: datetime
     total_quantity: Decimal
-    total_amount: Decimal
+    total_goods_amount: Decimal
+    total_bonus_quantity: Decimal
+    total_bonus_amount: Decimal
     items: List[ShopOrderDetailItem]
+    payment: Optional[ShopOrderPaymentOut] = None
 
 
 class ManagerReturnDetailItem(BaseModel):
@@ -365,10 +371,27 @@ class AdminDailyReport(ManagerDailyReport):
     manager_name: str
 
 
+class ShopDayStat(BaseModel):
+    date: date
+    issued_total: Decimal
+    returns_total: Decimal
+    bonuses_total: Decimal
+    debt_total: Decimal
+
+
+class ShopDocumentRef(BaseModel):
+    id: int
+    type: Literal["delivery", "return_from_shop"]
+    date: datetime
+    shop_name: str
+    manager_name: str
+
+
 class AdminShopPeriodSummary(BaseModel):
     issued_total: Decimal
     returns_total: Decimal
     bonuses_total: Decimal
+    debt_total: Decimal
 
 
 class AdminShopPeriodReport(BaseModel):
@@ -377,3 +400,6 @@ class AdminShopPeriodReport(BaseModel):
     date_from: date
     date_to: date
     summary: AdminShopPeriodSummary
+    days: List[ShopDayStat]
+    deliveries: List[ShopDocumentRef]
+    returns_from_shop: List[ShopDocumentRef]

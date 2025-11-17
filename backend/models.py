@@ -149,7 +149,9 @@ class ShopOrderPayment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("shop_orders.id"), nullable=False, unique=True)
-    total_amount = Column(Numeric, nullable=False)
+    total_goods_amount = Column(Numeric, nullable=False)
+    returns_amount = Column(Numeric, nullable=False, default=0)
+    payable_amount = Column(Numeric, nullable=False)
     paid_amount = Column(Numeric, nullable=False)
     debt_amount = Column(Numeric, nullable=False)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
