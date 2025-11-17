@@ -106,18 +106,28 @@ def ensure_shop_order_item_columns():
     except Exception:
         return
 
+    statements = []
     if "is_bonus" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_items ADD COLUMN IF NOT EXISTS is_bonus BOOLEAN DEFAULT FALSE"
+        )
+    if "is_return" not in columns:
+        statements.append(
+            "ALTER TABLE shop_order_items ADD COLUMN IF NOT EXISTS is_return BOOLEAN DEFAULT FALSE"
+        )
+
+    if statements:
         with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
             connection.execute(
                 text(
-                    "ALTER TABLE shop_order_items "
-                    "ADD COLUMN IF NOT EXISTS is_bonus BOOLEAN DEFAULT FALSE"
+                    "UPDATE shop_order_items SET is_bonus = FALSE WHERE is_bonus IS NULL"
                 )
             )
             connection.execute(
                 text(
-                    "UPDATE shop_order_items SET is_bonus = FALSE "
-                    "WHERE is_bonus IS NULL"
+                    "UPDATE shop_order_items SET is_return = FALSE WHERE is_return IS NULL"
                 )
             )
 
@@ -1160,6 +1170,7 @@ def _fetch_shop_orders(
                         "quantity": _to_float(item.quantity),
                         "price": _to_optional_float(item.price),
                         "is_bonus": bool(item.is_bonus),
+                        "is_return": bool(getattr(item, "is_return", False)),
                     }
                     for item in items
                 ],
@@ -2330,7 +2341,11 @@ def create_shop_order(
         raise HTTPException(status_code=400, detail="Необходимо указать товары")
 
     totals_by_product: Dict[int, int] = {}
-    line_items: List[Dict[str, Any]] = []
+    product_ids: set[int] = set()
+    normal_items: List[Dict[str, Any]] = []
+    bonus_items: List[Dict[str, Any]] = []
+    return_items: List[Dict[str, Any]] = []
+
     for item in order.items:
         quantity_decimal = Decimal(str(item.quantity))
         quantity_value = int(quantity_decimal)
@@ -2343,21 +2358,34 @@ def create_shop_order(
             if price_value < 0:
                 raise HTTPException(status_code=400, detail="Цена не может быть отрицательной")
 
-        totals_by_product[item.product_id] = totals_by_product.get(item.product_id, 0) + quantity_value
-        line_items.append(
-            {
-                "product_id": item.product_id,
-                "quantity": quantity_value,
-                "price": price_value,
-                "is_bonus": bool(getattr(item, "is_bonus", False)),
-            }
-        )
+        product_ids.add(item.product_id)
 
-    product_ids = list(totals_by_product.keys())
+        if not item.is_return:
+            totals_by_product[item.product_id] = totals_by_product.get(item.product_id, 0) + quantity_value
+
+        item_data = {
+            "product_id": item.product_id,
+            "quantity": quantity_decimal,
+            "price": price_value,
+            "is_bonus": bool(getattr(item, "is_bonus", False)),
+            "is_return": bool(getattr(item, "is_return", False)),
+        }
+
+        if item_data["is_return"]:
+            return_items.append(item_data)
+        elif item_data["is_bonus"]:
+            bonus_items.append(item_data)
+        else:
+            normal_items.append(item_data)
+
+    if not product_ids:
+        raise HTTPException(status_code=400, detail="Необходимо указать товары")
+
+    product_ids_list = list(product_ids)
     archived_column = getattr(models.Product, "is_archived", None)
 
     products_query = db.query(models.Product).filter(
-        models.Product.id.in_(product_ids),
+        models.Product.id.in_(product_ids_list),
         models.Product.manager_id == current_user.id,
         models.Product.is_return.is_(False),
     )
@@ -2367,7 +2395,7 @@ def create_shop_order(
     manager_products = products_query.with_for_update().all()
     manager_map = {product.id: product for product in manager_products}
 
-    missing_ids = [str(pid) for pid in product_ids if pid not in manager_map]
+    missing_ids = [str(pid) for pid in product_ids_list if pid not in manager_map]
     if missing_ids:
         raise HTTPException(
             status_code=404,
@@ -2392,12 +2420,6 @@ def create_shop_order(
             detail={"error": "INSUFFICIENT_STOCK", "items": insufficient},
         )
 
-    returns_amount = Decimal("0")
-    if order.returns and order.returns.amount is not None:
-        returns_amount = Decimal(str(order.returns.amount))
-    if returns_amount < 0:
-        raise HTTPException(status_code=400, detail="Сумма возврата не может быть отрицательной")
-
     paid_amount = Decimal(str(order.paid_amount))
     if paid_amount < 0:
         raise HTTPException(status_code=400, detail="Оплата не может быть отрицательной")
@@ -2405,6 +2427,7 @@ def create_shop_order(
     now = datetime.now(timezone.utc)
     total_goods_amount = Decimal("0")
     total_bonus_amount = Decimal("0")
+    returns_amount = Decimal("0")
 
     try:
         order_row = models.ShopOrder(
@@ -2419,7 +2442,7 @@ def create_shop_order(
             product = manager_map[product_id]
             product.quantity = (product.quantity or 0) - requested
 
-        for item_data in line_items:
+        for item_data in normal_items + bonus_items + return_items:
             product = manager_map[item_data["product_id"]]
             fallback_price = Decimal(str(product.price or 0))
             price_decimal = item_data["price"] if item_data["price"] is not None else fallback_price
@@ -2427,7 +2450,9 @@ def create_shop_order(
                 raise HTTPException(status_code=400, detail="Цена не может быть отрицательной")
 
             line_total = Decimal(str(item_data["quantity"])) * price_decimal
-            if item_data["is_bonus"]:
+            if item_data["is_return"]:
+                returns_amount += line_total
+            elif item_data["is_bonus"]:
                 total_bonus_amount += line_total
             else:
                 total_goods_amount += line_total
@@ -2439,6 +2464,7 @@ def create_shop_order(
                     quantity=item_data["quantity"],
                     price=price_decimal,
                     is_bonus=item_data["is_bonus"],
+                    is_return=item_data["is_return"],
                 )
             )
 
@@ -2450,6 +2476,24 @@ def create_shop_order(
         debt_amount = payable_amount - paid_amount
         if debt_amount < 0:
             debt_amount = Decimal("0")
+
+        if return_items:
+            shop_return = models.ShopReturn(
+                manager_id=current_user.id,
+                shop_id=shop.id,
+                created_at=now,
+            )
+            db.add(shop_return)
+            db.flush()
+
+            for item_data in return_items:
+                db.add(
+                    models.ShopReturnItem(
+                        return_id=shop_return.id,
+                        product_id=item_data["product_id"],
+                        quantity=item_data["quantity"],
+                    )
+                )
 
         db.add(
             models.ShopOrderPayment(
@@ -2521,6 +2565,7 @@ def get_shop_order_detail(
     total_goods_amount = Decimal("0")
     total_bonus_quantity = Decimal("0")
     total_bonus_amount = Decimal("0")
+    total_return_amount = Decimal("0")
     items: List[Dict[str, Any]] = []
 
     for item in sorted_items:
@@ -2529,7 +2574,9 @@ def get_shop_order_detail(
         effective_price = price_decimal or Decimal("0")
         line_total = quantity_decimal * effective_price
         total_quantity += quantity_decimal
-        if item.is_bonus:
+        if getattr(item, "is_return", False):
+            total_return_amount += line_total
+        elif item.is_bonus:
             total_bonus_quantity += quantity_decimal
             total_bonus_amount += line_total
         else:
@@ -2543,6 +2590,7 @@ def get_shop_order_detail(
                 "price": price_decimal,
                 "line_total": line_total,
                 "is_bonus": bool(item.is_bonus),
+                "is_return": bool(getattr(item, "is_return", False)),
             }
         )
 

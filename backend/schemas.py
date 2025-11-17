@@ -194,20 +194,16 @@ class IncomingDetail(BaseModel):
     items: List[IncomingDetailItem]
 
 
-class OrderReturnBlock(BaseModel):
-    amount: condecimal(ge=0)
-
-
 class ShopOrderItemCreate(BaseModel):
     product_id: int
     quantity: condecimal(gt=0)
     price: Optional[condecimal(ge=0)] = None
     is_bonus: bool = False
+    is_return: bool = False
 
 
 class ShopOrderCreate(BaseModel):
     shop_id: int
-    returns: Optional[OrderReturnBlock] = None
     items: List[ShopOrderItemCreate]
     paid_amount: condecimal(ge=0)
 
@@ -218,6 +214,7 @@ class ShopOrderItemOut(BaseModel):
     quantity: float
     price: Optional[float] = None
     is_bonus: bool
+    is_return: bool
 
 
 class ShopOrderPaymentOut(BaseModel):
@@ -246,6 +243,7 @@ class ShopOrderDetailItem(BaseModel):
     price: Optional[Decimal] = None
     line_total: Decimal
     is_bonus: bool
+    is_return: bool
 
 
 class ShopOrderDetail(BaseModel):

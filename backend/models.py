@@ -139,6 +139,7 @@ class ShopOrderItem(Base):
     quantity = Column(Numeric, nullable=False)
     price = Column(Numeric, nullable=True)
     is_bonus = Column(Boolean, nullable=False, default=False)
+    is_return = Column(Boolean, nullable=False, default=False)
 
     order = relationship("ShopOrder", back_populates="items")
     product = relationship("Product")
