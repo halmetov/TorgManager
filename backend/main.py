@@ -1199,6 +1199,7 @@ def _fetch_shop_returns(
 ) -> List[Dict[str, Any]]:
     query = db.query(models.ShopReturn).options(
         joinedload(models.ShopReturn.items).joinedload(models.ShopReturnItem.product),
+        joinedload(models.ShopReturn.manager),
         joinedload(models.ShopReturn.shop),
     )
 
@@ -1216,10 +1217,15 @@ def _fetch_shop_returns(
     results: List[Dict[str, Any]] = []
     for return_doc in returns:
         items = sorted(return_doc.items, key=lambda item: item.id)
+        total_quantity = sum(Decimal(str(item.quantity)) for item in items)
+        manager_name = ""
+        if return_doc.manager:
+            manager_name = return_doc.manager.full_name or return_doc.manager.username or ""
         results.append(
             {
                 "id": return_doc.id,
                 "manager_id": return_doc.manager_id,
+                "manager_name": manager_name,
                 "shop_id": return_doc.shop_id,
                 "shop_name": return_doc.shop.name if return_doc.shop else "",
                 "created_at": return_doc.created_at,
@@ -1231,6 +1237,7 @@ def _fetch_shop_returns(
                     }
                     for item in items
                 ],
+                "total_quantity": _to_float(total_quantity),
             }
         )
 
@@ -2834,11 +2841,13 @@ def get_shop_return_detail(
     sorted_items = sorted(return_doc.items, key=lambda item: item.id)
     items: List[Dict[str, Any]] = []
     total_amount = Decimal("0")
+    total_quantity = Decimal("0")
     for item in sorted_items:
         quantity_decimal = Decimal(str(item.quantity))
         price_decimal = Decimal(str(getattr(item, "price_at_time", None) or getattr(item.product, "price", 0) or 0))
         line_total = quantity_decimal * price_decimal
         total_amount += line_total
+        total_quantity += quantity_decimal
         items.append(
             {
                 "product_id": item.product_id,
@@ -2860,6 +2869,7 @@ def get_shop_return_detail(
         shop_id=return_doc.shop_id,
         shop_name=return_doc.shop.name if return_doc.shop else "",
         created_at=return_doc.created_at,
+        total_quantity=total_quantity,
         total_amount=total_amount,
         items=items,
     )
@@ -2867,13 +2877,18 @@ def get_shop_return_detail(
 
 @app.get("/shop-returns", response_model=List[schemas.ShopReturnOut])
 def list_shop_returns(
+    manager_id: Optional[int] = Query(None),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role != "manager":
-        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    if current_user.role == "manager":
+        return _fetch_shop_returns(db, manager_id=current_user.id)
 
-    return _fetch_shop_returns(db, manager_id=current_user.id)
+    if current_user.role == "admin":
+        target_manager_id = manager_id if manager_id is not None else None
+        return _fetch_shop_returns(db, manager_id=target_manager_id)
+
+    raise HTTPException(status_code=403, detail="Недостаточно прав")
 
 
 @app.post("/manager-returns", response_model=schemas.ManagerReturnCreated)

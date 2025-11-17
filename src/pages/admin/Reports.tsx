@@ -22,10 +22,14 @@ interface ManagerOption {
 }
 
 interface ManagerDailySummary {
-  received_total: string | number;
-  delivered_total: string | number;
-  return_to_main_total: string | number;
-  return_from_shops_total: string | number;
+  received_qty: string | number;
+  received_amount: string | number;
+  delivered_qty: string | number;
+  delivered_amount: string | number;
+  return_to_main_qty: string | number;
+  return_to_main_amount: string | number;
+  return_from_shops_qty: string | number;
+  return_from_shops_amount: string | number;
 }
 
 interface MovementRow {
@@ -60,6 +64,7 @@ interface ShopOrderDetailItem {
   price?: string | number | null;
   line_total: string | number;
   is_bonus: boolean;
+  is_return: boolean;
 }
 
 interface ShopOrderDetail {
@@ -73,6 +78,7 @@ interface ShopOrderDetail {
   total_goods_amount: string | number;
   total_bonus_quantity: string | number;
   total_bonus_amount: string | number;
+  total_return_amount: string | number;
   items: ShopOrderDetailItem[];
   payment?: ShopOrderPaymentDetail | null;
 }
@@ -81,6 +87,8 @@ interface ManagerReturnDetailItem {
   product_id: number;
   product_name: string;
   quantity: string | number;
+  price: string | number;
+  line_total: string | number;
 }
 
 interface ManagerReturnDetail {
@@ -88,6 +96,7 @@ interface ManagerReturnDetail {
   manager_id: number;
   manager_name: string;
   created_at: string;
+  total_amount: string | number;
   items: ManagerReturnDetailItem[];
 }
 
@@ -95,6 +104,8 @@ interface ShopReturnDetailItem {
   product_id: number;
   product_name: string;
   quantity: string | number;
+  price: string | number;
+  line_total: string | number;
 }
 
 interface ShopReturnDetail {
@@ -104,6 +115,8 @@ interface ShopReturnDetail {
   shop_id: number;
   shop_name: string;
   created_at: string;
+  total_quantity: string | number;
+  total_amount: string | number;
   items: ShopReturnDetailItem[];
 }
 
@@ -142,13 +155,6 @@ export default function AdminReports() {
     queryFn: () => api.getManagersList(),
   });
 
-  useEffect(() => {
-    if (!managers.length || selectedManagerId) {
-      return;
-    }
-    setSelectedManagerId(String(managers[0].id));
-  }, [managers, selectedManagerId]);
-
   const formattedDate = useMemo(() => {
     if (!selectedDate) return "";
     return format(selectedDate, "yyyy-MM-dd");
@@ -178,22 +184,31 @@ export default function AdminReports() {
     toast({ title: "Ошибка", description: message, variant: "destructive" });
   }, [error, toast]);
 
-  const summaryCards = useMemo(() => {
-    if (!report) {
-      return [
-        { label: "Получено", value: 0 },
-        { label: "Доставлено", value: 0 },
-        { label: "Возврат в главный склад", value: 0 },
-        { label: "Возврат из магазинов", value: 0 },
-      ];
-    }
-    return [
-      { label: "Получено", value: report.summary.received_total ?? 0 },
-      { label: "Доставлено", value: report.summary.delivered_total ?? 0 },
-      { label: "Возврат в главный склад", value: report.summary.return_to_main_total ?? 0 },
-      { label: "Возврат из магазинов", value: report.summary.return_from_shops_total ?? 0 },
-    ];
-  }, [report]);
+  const summaryCards = useMemo(
+    () => [
+      {
+        label: "Получено",
+        qty: report?.summary.received_qty ?? 0,
+        amount: report?.summary.received_amount ?? 0,
+      },
+      {
+        label: "Доставлено",
+        qty: report?.summary.delivered_qty ?? 0,
+        amount: report?.summary.delivered_amount ?? 0,
+      },
+      {
+        label: "Возврат в главный склад",
+        qty: report?.summary.return_to_main_qty ?? 0,
+        amount: report?.summary.return_to_main_amount ?? 0,
+      },
+      {
+        label: "Возврат из магазинов",
+        qty: report?.summary.return_from_shops_qty ?? 0,
+        amount: report?.summary.return_from_shops_amount ?? 0,
+      },
+    ],
+    [report?.summary]
+  );
 
   const movementData = useMemo(() => {
     if (!report) return [] as MovementRow[];
@@ -224,10 +239,21 @@ export default function AdminReports() {
   const getTotalQuantity = (items: { quantity: string | number }[]) =>
     items.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0);
 
+  const getLineTotal = (
+    items: { line_total: string | number; [key: string]: any }[],
+    predicate: (item: any) => boolean
+  ) => items.reduce((sum, item) => (predicate(item) ? sum + Number(item.line_total ?? 0) : sum), 0);
+
+  const getQuantityTotal = (
+    items: { quantity: string | number; [key: string]: any }[],
+    predicate: (item: any) => boolean
+  ) => items.reduce((sum, item) => (predicate(item) ? sum + Number(item.quantity ?? 0) : sum), 0);
+
   const isSummaryLoading = (reportLoading || reportFetching) && !report;
   const isMovementsLoading = (reportLoading || reportFetching) && !report;
 
   const managerName = report?.manager_name ?? managers.find((manager) => manager.id === managerIdNumber)?.full_name;
+  const hasSummaryData = Boolean(report);
 
   const handleViewDetails = async (row: MovementRow) => {
     const key = `${row.type}-${row.id}`;
@@ -278,6 +304,7 @@ export default function AdminReports() {
 
     if (detail.type === "delivery") {
       const data = detail.data;
+      const totalQuantity = getQuantityTotal(data.items, (item) => !item.is_return);
       return (
         <div className="space-y-4">
           <div className="text-sm text-muted-foreground space-y-1">
@@ -293,6 +320,7 @@ export default function AdminReports() {
                   <TableHead className="w-24">Кол-во</TableHead>
                   <TableHead className="w-28">Цена</TableHead>
                   <TableHead className="w-24 text-center">Бонус</TableHead>
+                  <TableHead className="w-24 text-center">Возврат</TableHead>
                   <TableHead className="w-32">Сумма</TableHead>
                 </TableRow>
               </TableHeader>
@@ -307,6 +335,7 @@ export default function AdminReports() {
                         : formatCurrency(item.price)}
                     </TableCell>
                     <TableCell className="text-center">{item.is_bonus ? "Да" : "Нет"}</TableCell>
+                    <TableCell className="text-center">{item.is_return ? "Да" : "Нет"}</TableCell>
                     <TableCell>{formatCurrency(item.line_total)}</TableCell>
                   </TableRow>
                 ))}
@@ -314,9 +343,11 @@ export default function AdminReports() {
             </Table>
           </div>
           <div className="text-sm text-muted-foreground space-y-1">
-            <p>Всего: {formatValue(data.total_quantity)} шт.</p>
-            <p>Обычные товары: {formatCurrency(data.total_goods_amount)}</p>
-            <p>Бонусы: {formatCurrency(data.total_bonus_amount)}</p>
+            <p>Всего товаров: {formatValue(totalQuantity)} шт.</p>
+            <p>Сумма заказа: {formatCurrency(data.payment?.total_amount ?? data.total_goods_amount)}</p>
+            <p>Сумма возврата: {formatCurrency(data.payment?.returns_amount ?? data.total_return_amount)}</p>
+            <p>Сумма бонусов: {formatCurrency(data.total_bonus_amount ?? getLineTotal(data.items, (item) => item.is_bonus))}</p>
+            <p>Долг: {formatCurrency(data.payment?.debt_amount ?? 0)}</p>
           </div>
         </div>
       );
@@ -337,6 +368,8 @@ export default function AdminReports() {
                 <TableRow>
                   <TableHead>Товар</TableHead>
                   <TableHead className="w-24">Кол-во</TableHead>
+                  <TableHead className="w-28">Цена</TableHead>
+                  <TableHead className="w-32">Сумма</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -344,12 +377,17 @@ export default function AdminReports() {
                   <TableRow key={item.product_id}>
                     <TableCell>{item.product_name}</TableCell>
                     <TableCell>{formatValue(item.quantity)}</TableCell>
+                    <TableCell>{formatCurrency(item.price)}</TableCell>
+                    <TableCell>{formatCurrency(item.line_total)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </div>
-          <div className="text-sm text-muted-foreground">Всего: {formatValue(total)} шт.</div>
+          <div className="text-sm text-muted-foreground space-y-1">
+            <p>Всего: {formatValue(total)} шт.</p>
+            <p>Сумма возврата: {formatCurrency(data.total_amount)}</p>
+          </div>
         </div>
       );
     }
@@ -369,6 +407,8 @@ export default function AdminReports() {
               <TableRow>
                 <TableHead>Товар</TableHead>
                 <TableHead className="w-24">Кол-во</TableHead>
+                <TableHead className="w-28">Цена</TableHead>
+                <TableHead className="w-32">Сумма</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -376,12 +416,17 @@ export default function AdminReports() {
                 <TableRow key={item.product_id}>
                   <TableCell>{item.product_name}</TableCell>
                   <TableCell>{formatValue(item.quantity)}</TableCell>
+                  <TableCell>{formatCurrency(item.price)}</TableCell>
+                  <TableCell>{formatCurrency(item.line_total)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
-        <div className="text-sm text-muted-foreground">Всего: {formatValue(total)} шт.</div>
+        <div className="text-sm text-muted-foreground space-y-1">
+          <p>Всего: {formatValue(data.total_quantity ?? total)} шт.</p>
+          <p>Сумма возврата: {formatCurrency(data.total_amount)}</p>
+        </div>
       </div>
     );
   };
@@ -466,9 +511,16 @@ export default function AdminReports() {
                   <CardTitle className="text-sm font-medium text-muted-foreground">{card.label}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-2xl font-semibold">
-                    {isSummaryLoading ? "—" : numberFormatter.format(Number(card.value ?? 0))}
-                  </p>
+                  <div className="space-y-1">
+                    <p className="text-2xl font-semibold">
+                      {isSummaryLoading || !hasSummaryData || !managerIdNumber
+                        ? "—"
+                        : formatValue(card.qty)}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Сумма: {isSummaryLoading || !hasSummaryData || !managerIdNumber ? "—" : formatCurrency(card.amount)}
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
             ))}
