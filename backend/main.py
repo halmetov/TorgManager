@@ -1261,8 +1261,13 @@ def _build_manager_daily_report(
 
     dispatch_status = func.coalesce(models.Dispatch.status, literal("pending"))
     dispatch_timestamp = func.coalesce(models.Dispatch.accepted_at, models.Dispatch.created_at)
+    dispatch_price_column = getattr(models.Dispatch, "price_at_time", None)
+    dispatch_price_expr = (
+        models.Dispatch.quantity
+        * func.coalesce(dispatch_price_column or models.Dispatch.price, models.Dispatch.price, 0)
+    )
 
-    received_total_raw = (
+    received_qty_raw = (
         db.query(func.coalesce(func.sum(models.Dispatch.quantity), 0))
         .filter(models.Dispatch.manager_id == manager.id)
         .filter(dispatch_status.in_(("sent", "accepted")))
@@ -1271,16 +1276,51 @@ def _build_manager_daily_report(
         or 0
     )
 
-    delivered_total_raw = (
-        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
-        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
-        .filter(models.ShopOrder.manager_id == manager.id)
-        .filter(models.ShopOrder.created_at >= start, models.ShopOrder.created_at < end)
+    received_amount_raw = (
+        db.query(func.coalesce(func.sum(dispatch_price_expr), 0))
+        .filter(models.Dispatch.manager_id == manager.id)
+        .filter(dispatch_status.in_(("sent", "accepted")))
+        .filter(dispatch_timestamp >= start, dispatch_timestamp < end)
         .scalar()
         or 0
     )
 
-    return_to_main_total_raw = (
+    order_price_expr = models.ShopOrderItem.quantity * func.coalesce(
+        models.ShopOrderItem.price, 0
+    )
+
+    delivered_qty_raw = (
+        db.query(func.coalesce(func.sum(models.ShopOrderItem.quantity), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.manager_id == manager.id)
+        .filter(models.ShopOrder.created_at >= start, models.ShopOrder.created_at < end)
+        .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .filter(models.ShopOrderItem.is_return.is_(False))
+        .scalar()
+        or 0
+    )
+
+    delivered_amount_raw = (
+        db.query(func.coalesce(func.sum(order_price_expr), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.manager_id == manager.id)
+        .filter(models.ShopOrder.created_at >= start, models.ShopOrder.created_at < end)
+        .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .filter(models.ShopOrderItem.is_return.is_(False))
+        .scalar()
+        or 0
+    )
+
+    manager_return_price_column = getattr(models.ManagerReturnItem, "price_at_time", None)
+    manager_return_price_expr = models.ManagerReturnItem.quantity * func.coalesce(
+        manager_return_price_column
+        if manager_return_price_column is not None
+        else models.Product.price,
+        models.Product.price,
+        0,
+    )
+
+    return_to_main_qty_raw = (
         db.query(func.coalesce(func.sum(models.ManagerReturnItem.quantity), 0))
         .join(models.ManagerReturn, models.ManagerReturnItem.return_id == models.ManagerReturn.id)
         .filter(models.ManagerReturn.manager_id == manager.id)
@@ -1289,9 +1329,36 @@ def _build_manager_daily_report(
         or 0
     )
 
-    return_from_shops_total_raw = (
+    return_to_main_amount_raw = (
+        db.query(func.coalesce(func.sum(manager_return_price_expr), 0))
+        .join(models.ManagerReturn, models.ManagerReturnItem.return_id == models.ManagerReturn.id)
+        .join(models.Product, models.Product.id == models.ManagerReturnItem.product_id)
+        .filter(models.ManagerReturn.manager_id == manager.id)
+        .filter(models.ManagerReturn.created_at >= start, models.ManagerReturn.created_at < end)
+        .scalar()
+        or 0
+    )
+
+    shop_return_price_column = getattr(models.ShopReturnItem, "price_at_time", None)
+    shop_return_price_expr = models.ShopReturnItem.quantity * func.coalesce(
+        shop_return_price_column if shop_return_price_column is not None else models.Product.price,
+        models.Product.price,
+        0,
+    )
+
+    return_from_shops_qty_raw = (
         db.query(func.coalesce(func.sum(models.ShopReturnItem.quantity), 0))
         .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .filter(models.ShopReturn.manager_id == manager.id)
+        .filter(models.ShopReturn.created_at >= start, models.ShopReturn.created_at < end)
+        .scalar()
+        or 0
+    )
+
+    return_from_shops_amount_raw = (
+        db.query(func.coalesce(func.sum(shop_return_price_expr), 0))
+        .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .join(models.Product, models.Product.id == models.ShopReturnItem.product_id)
         .filter(models.ShopReturn.manager_id == manager.id)
         .filter(models.ShopReturn.created_at >= start, models.ShopReturn.created_at < end)
         .scalar()
@@ -1325,10 +1392,14 @@ def _build_manager_daily_report(
     )
 
     summary = schemas.ManagerDailySummary(
-        received_total=_to_decimal(received_total_raw),
-        delivered_total=_to_decimal(delivered_total_raw),
-        return_to_main_total=_to_decimal(return_to_main_total_raw),
-        return_from_shops_total=_to_decimal(return_from_shops_total_raw),
+        received_qty=_to_decimal(received_qty_raw),
+        received_amount=_to_decimal(received_amount_raw),
+        delivered_qty=_to_decimal(delivered_qty_raw),
+        delivered_amount=_to_decimal(delivered_amount_raw),
+        return_to_main_qty=_to_decimal(return_to_main_qty_raw),
+        return_to_main_amount=_to_decimal(return_to_main_amount_raw),
+        return_from_shops_qty=_to_decimal(return_from_shops_qty_raw),
+        return_from_shops_amount=_to_decimal(return_from_shops_amount_raw),
     )
 
     deliveries = [
@@ -1830,6 +1901,12 @@ def get_admin_shop_period_report(
     range_end = datetime.combine(date_to, time_type.min) + timedelta(days=1)
 
     price_expr = models.ShopOrderItem.quantity * func.coalesce(models.ShopOrderItem.price, 0)
+    shop_return_price_column = getattr(models.ShopReturnItem, "price_at_time", None)
+    return_price_expr = models.ShopReturnItem.quantity * func.coalesce(
+        shop_return_price_column if shop_return_price_column is not None else models.Product.price,
+        models.Product.price,
+        0,
+    )
 
     issued_total_raw = (
         db.query(func.coalesce(func.sum(price_expr), 0))
@@ -1852,8 +1929,9 @@ def get_admin_shop_period_report(
     )
 
     returns_total_raw = (
-        db.query(func.coalesce(func.sum(models.ShopReturnItem.quantity), 0))
+        db.query(func.coalesce(func.sum(return_price_expr), 0))
         .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .join(models.Product, models.Product.id == models.ShopReturnItem.product_id)
         .filter(models.ShopReturn.shop_id == shop_id)
         .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
         .scalar()
@@ -1919,9 +1997,10 @@ def get_admin_shop_period_report(
     returns_by_day = (
         db.query(
             func.date(models.ShopReturn.created_at).label("day"),
-            func.coalesce(func.sum(models.ShopReturnItem.quantity), 0).label("total"),
+            func.coalesce(func.sum(return_price_expr), 0).label("total"),
         )
         .join(models.ShopReturn, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .join(models.Product, models.Product.id == models.ShopReturnItem.product_id)
         .filter(models.ShopReturn.shop_id == shop_id)
         .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
         .group_by(func.date(models.ShopReturn.created_at))
@@ -2006,11 +2085,12 @@ def get_admin_shop_period_report(
             models.ShopReturn.created_at,
             models.User.full_name,
             models.User.username,
-            func.coalesce(func.sum(models.ShopReturnItem.quantity), 0).label("amount"),
+            func.coalesce(func.sum(return_price_expr), 0).label("amount"),
         )
         .join(models.Shop, models.Shop.id == models.ShopReturn.shop_id)
         .join(models.User, models.User.id == models.ShopReturn.manager_id)
         .join(models.ShopReturnItem, models.ShopReturnItem.return_id == models.ShopReturn.id)
+        .join(models.Product, models.Product.id == models.ShopReturnItem.product_id)
         .filter(models.ShopReturn.shop_id == shop_id)
         .filter(models.ShopReturn.created_at >= range_start, models.ShopReturn.created_at < range_end)
         .group_by(
@@ -2561,30 +2641,25 @@ def get_shop_order_detail(
         raise HTTPException(status_code=403, detail="Недостаточно прав для просмотра заказа")
 
     sorted_items = sorted(order.items, key=lambda item: item.id)
-    total_quantity = Decimal("0")
     total_goods_amount = Decimal("0")
-    total_bonus_quantity = Decimal("0")
     total_bonus_amount = Decimal("0")
     total_return_amount = Decimal("0")
     items: List[Dict[str, Any]] = []
 
     for item in sorted_items:
         quantity_decimal = Decimal(str(item.quantity))
-        price_decimal = Decimal(str(item.price)) if item.price is not None else None
-        effective_price = price_decimal or Decimal("0")
-        line_total = quantity_decimal * effective_price
-        total_quantity += quantity_decimal
+        price_decimal = Decimal(str(item.price or 0))
+        line_total = quantity_decimal * price_decimal
+
         if getattr(item, "is_return", False):
             total_return_amount += line_total
         elif item.is_bonus:
-            total_bonus_quantity += quantity_decimal
             total_bonus_amount += line_total
         else:
             total_goods_amount += line_total
 
         items.append(
             {
-                "product_id": item.product_id,
                 "product_name": item.product.name if item.product else "",
                 "quantity": quantity_decimal,
                 "price": price_decimal,
@@ -2598,30 +2673,40 @@ def get_shop_order_detail(
     if order.manager:
         manager_name = order.manager.full_name or order.manager.username or ""
 
-    payment_data = None
+    total_amount = total_goods_amount
+    returns_amount = total_return_amount
+    payable_amount = total_amount - returns_amount
+    if payable_amount < 0:
+        payable_amount = Decimal("0")
+
+    paid_amount = Decimal("0")
+    debt_amount = payable_amount
+
     if order.payment:
-        payment_data = schemas.ShopOrderPaymentOut(
-            total_amount=_to_decimal(order.payment.total_amount),
-            total_goods_amount=_to_decimal(order.payment.total_goods_amount),
-            returns_amount=_to_decimal(order.payment.returns_amount),
-            payable_amount=_to_decimal(order.payment.payable_amount),
-            paid_amount=_to_decimal(order.payment.paid_amount),
-            debt_amount=_to_decimal(order.payment.debt_amount),
-        )
+        total_amount = _to_decimal(order.payment.total_amount)
+        returns_amount = _to_decimal(order.payment.returns_amount)
+        payable_amount = _to_decimal(order.payment.payable_amount)
+        paid_amount = _to_decimal(order.payment.paid_amount)
+        debt_amount = _to_decimal(order.payment.debt_amount)
+
+    payment_data = schemas.ShopOrderPaymentDetail(
+        total_amount=total_amount,
+        returns_amount=returns_amount,
+        payable_amount=payable_amount,
+        paid_amount=paid_amount,
+        debt_amount=debt_amount,
+    )
 
     return schemas.ShopOrderDetail(
         id=order.id,
-        manager_id=order.manager_id,
         manager_name=manager_name,
-        shop_id=order.shop_id,
         shop_name=order.shop.name if order.shop else "",
         created_at=order.created_at,
-        total_quantity=total_quantity,
-        total_goods_amount=total_goods_amount,
-        total_bonus_quantity=total_bonus_quantity,
-        total_bonus_amount=total_bonus_amount,
         items=items,
         payment=payment_data,
+        total_goods_amount=total_goods_amount,
+        total_bonus_amount=total_bonus_amount,
+        total_return_amount=total_return_amount,
     )
 
 
@@ -2748,13 +2833,19 @@ def get_shop_return_detail(
 
     sorted_items = sorted(return_doc.items, key=lambda item: item.id)
     items: List[Dict[str, Any]] = []
+    total_amount = Decimal("0")
     for item in sorted_items:
         quantity_decimal = Decimal(str(item.quantity))
+        price_decimal = Decimal(str(getattr(item, "price_at_time", None) or getattr(item.product, "price", 0) or 0))
+        line_total = quantity_decimal * price_decimal
+        total_amount += line_total
         items.append(
             {
                 "product_id": item.product_id,
                 "product_name": item.product.name if item.product else "",
                 "quantity": quantity_decimal,
+                "price": price_decimal,
+                "line_total": line_total,
             }
         )
 
@@ -2769,6 +2860,7 @@ def get_shop_return_detail(
         shop_id=return_doc.shop_id,
         shop_name=return_doc.shop.name if return_doc.shop else "",
         created_at=return_doc.created_at,
+        total_amount=total_amount,
         items=items,
     )
 
@@ -2924,13 +3016,19 @@ def get_manager_return_detail(
 
     sorted_items = sorted(return_doc.items, key=lambda item: item.id)
     items: List[Dict[str, Any]] = []
+    total_amount = Decimal("0")
     for item in sorted_items:
         quantity_decimal = Decimal(str(item.quantity))
+        price_decimal = Decimal(str(getattr(item, "price_at_time", None) or getattr(item.product, "price", 0) or 0))
+        line_total = quantity_decimal * price_decimal
+        total_amount += line_total
         items.append(
             {
                 "product_id": item.product_id,
                 "product_name": item.product.name if item.product else "",
                 "quantity": quantity_decimal,
+                "price": price_decimal,
+                "line_total": line_total,
             }
         )
 
@@ -2943,6 +3041,7 @@ def get_manager_return_detail(
         manager_id=return_doc.manager_id,
         manager_name=manager_name,
         created_at=return_doc.created_at,
+        total_amount=total_amount,
         items=items,
     )
 

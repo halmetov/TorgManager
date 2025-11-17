@@ -262,10 +262,6 @@ class ApiClient {
     return this.get(`/shop-orders/${id}`);
   }
 
-  async getAdminShopPeriodReport(shopId: number, from: string, to: string) {
-    return this.get(`/reports/admin/shop-period?shop_id=${shopId}&date_from=${from}&date_to=${to}`);
-  }
-
   // Manager stock
   async getManagerStock() {
     return this.get('/manager/stock');
