@@ -310,7 +310,7 @@ export default function AdminReports() {
           <div className="text-sm text-muted-foreground space-y-1">
             <p>Магазин: {data.shop_name}</p>
             <p>Дата: {formatDateTime(data.created_at)}</p>
-            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+            {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
           </div>
           <div className="overflow-x-auto">
             <Table>
@@ -360,7 +360,7 @@ export default function AdminReports() {
         <div className="space-y-4">
           <div className="text-sm text-muted-foreground space-y-1">
             <p>Дата: {formatDateTime(data.created_at)}</p>
-            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+            {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
           </div>
           <div className="overflow-x-auto">
             <Table>
@@ -399,7 +399,7 @@ export default function AdminReports() {
         <div className="text-sm text-muted-foreground space-y-1">
           <p>Магазин: {data.shop_name}</p>
           <p>Дата: {formatDateTime(data.created_at)}</p>
-          {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+          {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
         </div>
         <div className="overflow-x-auto">
           <Table>
@@ -444,14 +444,14 @@ export default function AdminReports() {
         <h1 className="text-3xl font-bold">Отчеты</h1>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           <div className="space-y-2">
-            <Label className="text-sm font-medium text-muted-foreground">Менеджер</Label>
+            <Label className="text-sm font-medium text-muted-foreground">Водитель</Label>
             <Select
               value={selectedManagerId}
               onValueChange={setSelectedManagerId}
               disabled={managersLoading || managers.length === 0}
             >
               <SelectTrigger>
-                <SelectValue placeholder={managersLoading ? "Загрузка..." : "Выберите менеджера"} />
+                <SelectValue placeholder={managersLoading ? "Загрузка..." : "Выберите водителя"} />
               </SelectTrigger>
               <SelectContent className="bg-background z-50">
                 {managers.map((manager) => (
@@ -499,7 +499,7 @@ export default function AdminReports() {
           <div className="space-y-1">
             <CardTitle>Сводка за день</CardTitle>
             {managerName ? (
-              <p className="text-sm text-muted-foreground">Отчёт по менеджеру: {managerName}</p>
+              <p className="text-sm text-muted-foreground">Отчёт по водителю: {managerName}</p>
             ) : null}
           </div>
         </CardHeader>
@@ -549,7 +549,7 @@ export default function AdminReports() {
         </CardHeader>
         <CardContent>
           {!managerIdNumber ? (
-            <div className="rounded-lg border p-4 text-center text-muted-foreground">Выберите менеджера и дату</div>
+            <div className="rounded-lg border p-4 text-center text-muted-foreground">Выберите водителя и дату</div>
           ) : isMovementsLoading ? (
             <div className="rounded-lg border p-4 text-center text-muted-foreground">Загрузка...</div>
           ) : movementData.length === 0 ? (

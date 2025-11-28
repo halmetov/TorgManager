@@ -297,7 +297,7 @@ export default function AdminShopReports() {
           <div className="text-sm text-muted-foreground space-y-1">
             <p>Магазин: {data.shop_name}</p>
             <p>Дата: {formatDateTime(data.created_at)}</p>
-            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+            {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
           </div>
           <div className="overflow-x-auto">
             <Table>
@@ -336,7 +336,7 @@ export default function AdminShopReports() {
         <div className="text-sm text-muted-foreground space-y-1">
           <p>Магазин: {data.shop_name}</p>
           <p>Дата: {formatDateTime(data.created_at)}</p>
-          {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+          {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
         </div>
         <div className="overflow-x-auto">
           <Table>
@@ -526,7 +526,7 @@ export default function AdminShopReports() {
                     <TableRow>
                       <TableHead>Дата и время</TableHead>
                       <TableHead className="text-right">Сумма</TableHead>
-                      <TableHead>Менеджер</TableHead>
+                      <TableHead>Водитель</TableHead>
                       <TableHead className="w-[80px] text-center">Действия</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -633,7 +633,7 @@ export default function AdminShopReports() {
                     <TableHead>Дата и время</TableHead>
                     <TableHead className="text-right">Сумма заказа</TableHead>
                     <TableHead className="text-right">Долг</TableHead>
-                    <TableHead>Менеджер</TableHead>
+                    <TableHead>Водитель</TableHead>
                     <TableHead className="w-[80px] text-center">Действия</TableHead>
                   </TableRow>
                 </TableHeader>

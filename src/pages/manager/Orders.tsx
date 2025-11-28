@@ -11,7 +11,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -114,13 +113,8 @@ export default function ManagerOrders() {
   const [returnQuantityInput, setReturnQuantityInput] = useState("");
   const [returnPriceInput, setReturnPriceInput] = useState("");
   const [detailOrder, setDetailOrder] = useState<ShopOrder | null>(null);
-  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
-  const [pendingOrderPayload, setPendingOrderPayload] = useState<ShopOrderCreatePayload | null>(null);
-  const [pendingSummary, setPendingSummary] = useState<
-    { totalGoodsAmount: number; returnsAmount: number; payableAmount: number } | null
-  >(null);
   const [paidAmountInput, setPaidAmountInput] = useState("");
-  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paidAmountError, setPaidAmountError] = useState<string | null>(null);
 
   const {
     data: stock = [],
@@ -537,21 +531,40 @@ export default function ManagerOrders() {
     return diff > 0 ? diff : 0;
   }, [returnsAmount, totalGoodsAmount]);
 
+  const totalAmount = useMemo(
+    () => calculateItemsTotal(items),
+    [calculateItemsTotal, items],
+  );
+
+  const estimatedDebt = useMemo(() => {
+    const paid = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
+    if (Number.isNaN(paid) || paid < 0) {
+      return payableAmount;
+    }
+
+    const diff = payableAmount - paid;
+    return diff > 0 ? diff : 0;
+  }, [paidAmountInput, payableAmount]);
+
   const orderMutation = useMutation({
     mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
-    onSuccess: () => {
-      toast({ title: "Товары выданы магазину" });
+    onSuccess: (data: ShopOrder) => {
+      const debtValue = data?.payment?.debt_amount;
+      toast({
+        title: "Товары выданы магазину",
+        description:
+          debtValue !== undefined && debtValue !== null
+            ? `Долг магазина: ${currencyFormatter.format(Number(debtValue))} ₸`
+            : undefined,
+      });
       setShopId("");
       setItems([]);
       resetGoodsSelection();
       resetBonusSelection();
       setReturnItems([]);
       resetReturnSelection();
-      setPendingOrderPayload(null);
-      setPendingSummary(null);
-      setPaymentDialogOpen(false);
       setPaidAmountInput("");
-      setPaymentError(null);
+      setPaidAmountError(null);
       queryClient.invalidateQueries({ queryKey: ["manager", "stock"] });
       refetchOrders();
     },
@@ -670,95 +683,50 @@ export default function ManagerOrders() {
       }),
     ];
 
-    const goodsAmount = totalGoodsAmount;
-    const returnsAmountValue = returnsAmount;
-    const payable = goodsAmount - returnsAmountValue > 0 ? goodsAmount - returnsAmountValue : 0;
+    const paidValue = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
+    if (Number.isNaN(paidValue)) {
+      setPaidAmountError("Введите корректную сумму оплаты");
+      toast({ title: "Ошибка", description: "Введите корректную сумму оплаты", variant: "destructive" });
+      return;
+    }
+
+    if (paidValue < 0) {
+      setPaidAmountError("Сумма не может быть отрицательной");
+      toast({ title: "Ошибка", description: "Сумма не может быть отрицательной", variant: "destructive" });
+      return;
+    }
+
+    setPaidAmountError(null);
 
     const payload: ShopOrderCreatePayload = {
       shop_id: Number(shopId),
       items: payloadItems,
-      paid_amount: payable,
+      paid_amount: paidValue,
     };
 
-    setPendingOrderPayload(payload);
-    setPendingSummary({ totalGoodsAmount: goodsAmount, returnsAmount: returnsAmountValue, payableAmount: payable });
-    setPaidAmountInput(payable ? payable.toFixed(2) : "0");
-    setPaymentError(null);
-    setPaymentDialogOpen(true);
+    orderMutation.mutate(payload);
   };
 
   const totalRequested = totalGoodsQuantity + totalBonusQuantity;
   const handlePaidAmountChange = (value: string) => {
     setPaidAmountInput(value);
     if (value.trim() === "") {
-      setPaymentError(null);
+      setPaidAmountError(null);
       return;
     }
 
     const parsed = Number(value);
     if (Number.isNaN(parsed)) {
-      setPaymentError("Введите корректную сумму");
+      setPaidAmountError("Введите корректную сумму");
       return;
     }
 
     if (parsed < 0) {
-      setPaymentError("Сумма не может быть отрицательной");
+      setPaidAmountError("Сумма не может быть отрицательной");
       return;
     }
 
-    if (pendingSummary && parsed > pendingSummary.payableAmount) {
-      setPaymentError("Сумма не может превышать сумму к оплате");
-      return;
-    }
-
-    setPaymentError(null);
-  };
-
-  const handleConfirmOrder = () => {
-    if (!pendingOrderPayload || !pendingSummary) {
-      return;
-    }
-
-    const parsed = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
-    if (Number.isNaN(parsed)) {
-      setPaymentError("Введите корректную сумму");
-      return;
-    }
-
-    if (parsed < 0) {
-      setPaymentError("Сумма не может быть отрицательной");
-      return;
-    }
-
-    if (parsed > pendingSummary.payableAmount) {
-      setPaymentError("Сумма не может превышать сумму к оплате");
-      return;
-    }
-
-    orderMutation.mutate({
-      ...pendingOrderPayload,
-      paid_amount: parsed,
-    });
-  };
-
-  const pendingPaid = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
-  const pendingDebt = pendingSummary
-    ? Math.max(
-        Number.isNaN(pendingPaid)
-          ? pendingSummary.payableAmount
-          : pendingSummary.payableAmount - pendingPaid,
-        0,
-      )
-    : 0;
-
-  const handlePaymentDialogChange = (open: boolean) => {
-    setPaymentDialogOpen(open);
-    if (!open && !orderMutation.isPending) {
-      setPendingOrderPayload(null);
-      setPendingSummary(null);
-      setPaymentError(null);
-      setPaidAmountInput("");
-    }
+    setPaidAmountError(null);
   };
 
   const isGoodsAddDisabled =
@@ -1034,7 +1002,7 @@ export default function ManagerOrders() {
                 <div>
                   <h3 className="text-lg font-semibold">Бонус</h3>
                   <p className="text-sm text-muted-foreground">
-                    Бонусные товары уменьшают остаток менеджера, но не увеличивают оплату
+                    Бонусные товары уменьшают остаток водителя, но не увеличивают оплату
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
@@ -1257,7 +1225,7 @@ export default function ManagerOrders() {
               <div>
                 <h3 className="text-lg font-semibold">Возврат</h3>
                 <p className="text-sm text-muted-foreground">
-                  Товары, которые магазин возвращает. Сумма возврата уменьшает оплату, остаток менеджера не
+                  Товары, которые магазин возвращает. Сумма возврата уменьшает оплату, остаток водителя не
                   уменьшается.
                 </p>
               </div>
@@ -1490,10 +1458,42 @@ export default function ManagerOrders() {
               </div>
             </div>
 
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-lg border p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Итого заказа</span>
+                  <span className="text-lg font-semibold">{currencyFormatter.format(totalAmount)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>К оплате с учётом возврата</span>
+                  <span className="text-foreground font-medium">{currencyFormatter.format(payableAmount)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>Долг по заказу</span>
+                  <span className="text-foreground font-medium">{currencyFormatter.format(estimatedDebt)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="paid-now">Сколько магазин платит сейчас</Label>
+                <Input
+                  id="paid-now"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={paidAmountInput}
+                  onChange={(event) => handlePaidAmountChange(event.target.value)}
+                  placeholder="0"
+                />
+                <p className={`text-sm ${paidAmountError ? "text-destructive" : "text-muted-foreground"}`}>
+                  {paidAmountError ?? "Можно указать 0, если оплата не производится"}
+                </p>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">Всего позиций: {totalRequested}</p>
               <p className="text-sm text-muted-foreground">
-                К оплате: {currencyFormatter.format(payableAmount)}
+                Ожидаемый долг: {currencyFormatter.format(estimatedDebt)}
               </p>
               <Button type="submit" className="w-full sm:w-56" disabled={orderMutation.isPending}>
                 {orderMutation.isPending ? "Отправка..." : "Отдать"}
@@ -1630,43 +1630,6 @@ export default function ManagerOrders() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={paymentDialogOpen} onOpenChange={handlePaymentDialogChange}>
-        <DialogContent className="w-full max-w-[90vw] sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Оплата заказа</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="text-sm text-muted-foreground space-y-1">
-              <p>
-                Сумма обычных товаров: {currencyFormatter.format(pendingSummary?.totalGoodsAmount ?? 0)}
-              </p>
-              <p>Возврат: {currencyFormatter.format(pendingSummary?.returnsAmount ?? 0)}</p>
-              <p>К оплате: {currencyFormatter.format(pendingSummary?.payableAmount ?? 0)}</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="paid-amount">Сколько клиент платит сейчас</Label>
-              <Input
-                id="paid-amount"
-                type="number"
-                min={0}
-                step="0.01"
-                value={paidAmountInput}
-                onChange={(event) => handlePaidAmountChange(event.target.value)}
-              />
-              <p className="text-sm text-muted-foreground">Долг: {currencyFormatter.format(pendingDebt)}</p>
-              {paymentError ? <p className="text-sm text-destructive">{paymentError}</p> : null}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => handlePaymentDialogChange(false)} disabled={orderMutation.isPending}>
-              Отмена
-            </Button>
-            <Button onClick={handleConfirmOrder} disabled={orderMutation.isPending || paymentError !== null}>
-              {orderMutation.isPending ? "Сохранение..." : "Сохранить"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

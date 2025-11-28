@@ -237,7 +237,7 @@ export default function AdminDispatch() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
       refetchHistory();
-      toast({ title: "Товары отправлены менеджеру" });
+      toast({ title: "Товары отправлены водителю" });
       setManagerId("");
       setItems([]);
       resetSelection();
@@ -331,7 +331,7 @@ export default function AdminDispatch() {
     event.preventDefault();
 
     if (!managerId) {
-      toast({ title: "Ошибка", description: "Выберите менеджера", variant: "destructive" });
+      toast({ title: "Ошибка", description: "Выберите водителя", variant: "destructive" });
       return;
     }
 
@@ -425,10 +425,10 @@ export default function AdminDispatch() {
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-4">
               <div>
-                <Label>Выберите менеджера</Label>
+                <Label>Выберите водителя</Label>
                 <Select value={managerId} onValueChange={setManagerId} required>
                   <SelectTrigger>
-                    <SelectValue placeholder="Выберите менеджера" />
+                    <SelectValue placeholder="Выберите водителя" />
                   </SelectTrigger>
                   <SelectContent className="bg-background z-50">
                     {managers
@@ -623,13 +623,13 @@ export default function AdminDispatch() {
         </CardHeader>
         <CardContent>
           <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">№</TableHead>
-                <TableHead>Менеджер</TableHead>
-                <TableHead>Статус</TableHead>
-                <TableHead>Создано</TableHead>
-                <TableHead>Принято</TableHead>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-12">№</TableHead>
+                  <TableHead>Водитель</TableHead>
+                  <TableHead>Статус</TableHead>
+                  <TableHead>Создано</TableHead>
+                  <TableHead>Принято</TableHead>
                 <TableHead className="w-32 text-right">Подробнее</TableHead>
               </TableRow>
             </TableHeader>

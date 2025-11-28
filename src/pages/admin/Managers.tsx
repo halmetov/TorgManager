@@ -31,7 +31,7 @@ export default function AdminManagers() {
     mutationFn: (data: any) => api.createManager(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["managers"] });
-      toast({ title: "Менеджер добавлен" });
+      toast({ title: "Водитель добавлен" });
       setOpen(false);
       setFormData({ username: "", password: "", full_name: "", is_active: true });
     },
@@ -53,17 +53,17 @@ export default function AdminManagers() {
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">Менеджеры</h1>
+        <h1 className="text-3xl font-bold">Водители</h1>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button>
               <Plus className="h-4 w-4" />
-              Добавить менеджера
+              Добавить водителя
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Новый менеджер</DialogTitle>
+              <DialogTitle>Новый водитель</DialogTitle>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
@@ -108,7 +108,7 @@ export default function AdminManagers() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Список менеджеров</CardTitle>
+          <CardTitle>Список водителей</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>

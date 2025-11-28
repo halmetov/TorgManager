@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone, date
 from datetime import time as time_type
 from typing import Any, Dict, List, Optional, Sequence
 from decimal import Decimal
+from pydantic import BaseModel
 import os
 import secrets
 import models
@@ -29,11 +30,15 @@ def ensure_shop_columns():
         statements.append("ALTER TABLE shops ADD COLUMN IF NOT EXISTS manager_id INTEGER")
     if "manager_name" not in columns:
         statements.append("ALTER TABLE shops ADD COLUMN IF NOT EXISTS manager_name VARCHAR")
+    if "debt" not in columns:
+        statements.append("ALTER TABLE shops ADD COLUMN IF NOT EXISTS debt FLOAT DEFAULT 0")
 
     if statements:
         with engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
+
+            connection.execute(text("UPDATE shops SET debt = COALESCE(debt, 0)"))
 
 
 ensure_shop_columns()
@@ -302,6 +307,10 @@ def _to_optional_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     return _to_float(value)
+
+
+class AdjustDebtRequest(BaseModel):
+    amount: float
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -613,6 +622,30 @@ def delete_shop(
     db.delete(db_shop)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/shops/{shop_id}/adjust-debt")
+def adjust_shop_debt(
+    shop_id: int,
+    data: AdjustDebtRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    shop = db.query(models.Shop).filter(models.Shop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    new_debt = (shop.debt or 0.0) + data.amount
+    if new_debt < 0:
+        new_debt = 0.0
+
+    shop.debt = new_debt
+    db.commit()
+    db.refresh(shop)
+    return {"shop_id": shop.id, "debt": shop.debt}
 
 # Managers endpoints
 @app.get("/managers", response_model=List[schemas.Manager])
@@ -1074,19 +1107,24 @@ def create_order(
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
     
+    total_order_amount = 0.0
+
     for item in order.items:
         # Check product availability
         product = db.query(models.Product).filter(
             models.Product.id == item.product_id,
             models.Product.manager_id == current_user.id
         ).first()
-        
+
         if not product or product.quantity < item.quantity:
             raise HTTPException(status_code=400, detail=f"Insufficient quantity for product {item.product_id}")
-        
+
         # Deduct from manager inventory
         product.quantity -= item.quantity
-        
+
+        line_total = item.quantity * item.price
+        total_order_amount += line_total
+
         # Create order record
         db_order = models.Order(
             manager_id=current_user.id,
@@ -1097,9 +1135,18 @@ def create_order(
             refrigerator_number=order.refrigerator_number
         )
         db.add(db_order)
-    
+
+    paid_amount = max(order.paid_amount or 0.0, 0.0)
+    debt_change = total_order_amount - paid_amount
+    if debt_change < 0:
+        debt_change = 0.0
+
+    if debt_change > 0:
+        shop.debt = (shop.debt or 0.0) + debt_change
+
     db.commit()
-    return {"message": "Order created successfully"}
+    db.refresh(shop)
+    return {"message": "Order created successfully", "shop_debt": shop.debt}
 
 # Returns endpoints
 @app.get("/manager/stock", response_model=List[schemas.ManagerStockItem])
@@ -2567,6 +2614,9 @@ def create_shop_order(
         debt_amount = payable_amount - paid_amount
         if debt_amount < 0:
             debt_amount = Decimal("0")
+
+        if debt_amount > 0:
+            shop.debt = (shop.debt or 0.0) + float(debt_amount)
 
         if return_items:
             shop_return = models.ShopReturn(
