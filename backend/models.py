@@ -1,7 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Numeric
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Numeric, Date
 from sqlalchemy.orm import relationship
 from database import Base
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 class User(Base):
     __tablename__ = "users"
@@ -208,3 +208,18 @@ class ManagerReturnItem(Base):
 
     return_doc = relationship("ManagerReturn", back_populates="items")
     product = relationship("Product")
+
+
+class DriverDailyReport(Base):
+    __tablename__ = "driver_daily_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    report_date = Column(Date, default=date.today, nullable=False)
+    cash_amount = Column(Float, default=0.0, nullable=False)
+    card_amount = Column(Float, default=0.0, nullable=False)
+    other_expenses = Column(Float, default=0.0, nullable=False)
+    other_details = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    manager = relationship("User")

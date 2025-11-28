@@ -1897,6 +1897,71 @@ def get_incoming_detail(
         "items": [dict(item) for item in items],
     }
 
+
+@app.post("/driver/daily-report", response_model=schemas.DriverDailyReportOut)
+def create_driver_daily_report(
+    data: schemas.DriverDailyReportCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Only driver can create this report")
+
+    today = date.today()
+
+    existing = (
+        db.query(models.DriverDailyReport)
+        .filter(
+            models.DriverDailyReport.manager_id == current_user.id,
+            models.DriverDailyReport.report_date == today,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Report for today already exists")
+
+    report = models.DriverDailyReport(
+        manager_id=current_user.id,
+        report_date=today,
+        cash_amount=data.cash_amount,
+        card_amount=data.card_amount,
+        other_expenses=data.other_expenses,
+        other_details=data.other_details,
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+@app.get("/reports/driver-daily", response_model=List[schemas.DriverDailyReportOut])
+def get_driver_daily_reports(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    manager_id: Optional[int] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admin can view this report")
+
+    query = db.query(models.DriverDailyReport)
+
+    if manager_id is not None:
+        query = query.filter(models.DriverDailyReport.manager_id == manager_id)
+
+    if start_date is not None:
+        query = query.filter(models.DriverDailyReport.report_date >= start_date)
+    if end_date is not None:
+        query = query.filter(models.DriverDailyReport.report_date <= end_date)
+
+    reports = query.order_by(
+        models.DriverDailyReport.report_date.desc(),
+        models.DriverDailyReport.created_at.desc(),
+    ).all()
+
+    return reports
+
 @app.get("/reports/manager/daily", response_model=schemas.ManagerDailyReport)
 def get_manager_daily_report(
     report_date: date = Query(..., alias="date"),

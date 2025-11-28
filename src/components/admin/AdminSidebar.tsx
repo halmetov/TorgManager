@@ -8,6 +8,7 @@ import {
   LogOut,
   ArrowDownToLine,
   BarChart3,
+  ClipboardList,
 } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
@@ -34,6 +35,7 @@ const items = [
   { title: "Возврат", url: "/admin/returns", icon: RotateCcw },
   { title: "Отчеты", url: "/admin/reports", icon: FileText },
   { title: "Отчёт по магазинам", url: "/admin/shop-reports", icon: BarChart3 },
+  { title: "Отчёт водителей", url: "/admin/driver-reports", icon: ClipboardList },
 ];
 
 export function AdminSidebar() {

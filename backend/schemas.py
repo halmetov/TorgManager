@@ -366,6 +366,27 @@ class ManagerReturnOut(BaseModel):
     items: List[ManagerReturnItemOut]
 
 
+class DriverDailyReportCreate(BaseModel):
+    cash_amount: float
+    card_amount: float
+    other_expenses: float
+    other_details: str
+
+
+class DriverDailyReportOut(BaseModel):
+    id: int
+    manager_id: int
+    report_date: date
+    cash_amount: float
+    card_amount: float
+    other_expenses: float
+    other_details: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class ManagerDailySummary(BaseModel):
     received_qty: Decimal
     received_amount: Decimal

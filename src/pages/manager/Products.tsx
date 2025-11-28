@@ -6,6 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 interface Product {
   id: number;
@@ -42,6 +45,13 @@ export default function ManagerProducts() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
   const [returnQuantities, setReturnQuantities] = useState<Record<number, string>>({});
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportForm, setReportForm] = useState({
+    cash_amount: "",
+    card_amount: "",
+    other_expenses: "",
+    other_details: "",
+  });
   const priceFormatter = useMemo(
     () =>
       new Intl.NumberFormat("ru-RU", {
@@ -109,6 +119,8 @@ export default function ManagerProducts() {
       toast({ title: "Возврат отправлен на склад" });
       setReturnQuantities({});
       queryClient.invalidateQueries({ queryKey: ["products"] });
+      setReportForm({ cash_amount: "", card_amount: "", other_expenses: "", other_details: "" });
+      setShowReportModal(true);
     },
     onError: (mutationError: unknown) => {
       const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
@@ -194,6 +206,53 @@ export default function ManagerProducts() {
     managerReturnMutation.mutate({
       items: managerSelectedItems.map((item) => ({ product_id: item.productId, quantity: item.requested })),
     });
+  };
+
+  const createDailyReportMutation = useMutation({
+    mutationFn: (payload: {
+      cash_amount: number;
+      card_amount: number;
+      other_expenses: number;
+      other_details: string;
+    }) => api.createDriverDailyReport(payload),
+    onSuccess: () => {
+      toast({ title: "Отчёт за сегодня сохранён" });
+      setShowReportModal(false);
+      setReportForm({ cash_amount: "", card_amount: "", other_expenses: "", other_details: "" });
+    },
+    onError: (error: any) => {
+      const message = error?.detail || error?.message || "Не удалось сохранить отчёт";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    },
+  });
+
+  const handleReportSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (createDailyReportMutation.isPending) return;
+
+    const cashAmount = Number(reportForm.cash_amount || 0);
+    const cardAmount = Number(reportForm.card_amount || 0);
+    const otherExpenses = Number(reportForm.other_expenses || 0);
+
+    if ([cashAmount, cardAmount, otherExpenses].some((value) => Number.isNaN(value) || value < 0)) {
+      toast({
+        title: "Ошибка",
+        description: "Суммы должны быть неотрицательными числами",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    createDailyReportMutation.mutate({
+      cash_amount: cashAmount,
+      card_amount: cardAmount,
+      other_expenses: otherExpenses,
+      other_details: reportForm.other_details,
+    });
+  };
+
+  const handleReportFieldChange = (field: keyof typeof reportForm, value: string) => {
+    setReportForm((prev) => ({ ...prev, [field]: value }));
   };
 
   const fetchDispatches = async (): Promise<DispatchRecord[]> => {
@@ -533,6 +592,74 @@ export default function ManagerProducts() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={showReportModal} onOpenChange={setShowReportModal}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Отчёт за сегодня</DialogTitle>
+            <DialogDescription>Укажи, сколько сегодня денег:</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleReportSubmit} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="card_amount">На карте</Label>
+                <Input
+                  id="card_amount"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={reportForm.card_amount}
+                  onChange={(event) => handleReportFieldChange("card_amount", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cash_amount">Наличные</Label>
+                <Input
+                  id="cash_amount"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={reportForm.cash_amount}
+                  onChange={(event) => handleReportFieldChange("cash_amount", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="other_expenses">Потрачено на другие</Label>
+                <Input
+                  id="other_expenses"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={reportForm.other_expenses}
+                  onChange={(event) => handleReportFieldChange("other_expenses", event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="other_details">На что потратил (например, бензин)</Label>
+              <Textarea
+                id="other_details"
+                rows={3}
+                value={reportForm.other_details}
+                onChange={(event) => handleReportFieldChange("other_details", event.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowReportModal(false)}
+                disabled={createDailyReportMutation.isPending}
+              >
+                Отмена
+              </Button>
+              <Button type="submit" disabled={createDailyReportMutation.isPending}>
+                {createDailyReportMutation.isPending ? "Сохранение..." : "Сохранить отчёт"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

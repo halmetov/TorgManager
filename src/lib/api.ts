@@ -308,6 +308,32 @@ class ApiClient {
     return this.get(`/manager-returns/${id}`);
   }
 
+  async createDriverDailyReport(data: {
+    cash_amount: number;
+    card_amount: number;
+    other_expenses: number;
+    other_details: string;
+  }) {
+    return this.post('/driver/daily-report', data);
+  }
+
+  async getDriverDailyReports(params: { start_date?: string; end_date?: string; manager_id?: number }) {
+    const searchParams = new URLSearchParams();
+
+    if (params.start_date) {
+      searchParams.set('start_date', params.start_date);
+    }
+    if (params.end_date) {
+      searchParams.set('end_date', params.end_date);
+    }
+    if (params.manager_id !== undefined) {
+      searchParams.set('manager_id', String(params.manager_id));
+    }
+
+    const query = searchParams.toString();
+    return this.get(`/reports/driver-daily${query ? `?${query}` : ''}`);
+  }
+
   // Manager Products
   // Reports
   async getProductReport() {
