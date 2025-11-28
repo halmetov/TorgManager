@@ -15,6 +15,7 @@ import AdminDispatch from "./pages/admin/Dispatch";
 import AdminReturns from "./pages/admin/Returns";
 import AdminReports from "./pages/admin/Reports";
 import AdminShopReports from "./pages/admin/ShopReports";
+import AdminDriverReports from "./pages/admin/DriverReports";
 import ManagerProducts from "./pages/manager/Products";
 import ManagerShops from "./pages/manager/Shops";
 import ManagerOrders from "./pages/manager/Orders";
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="returns" element={<AdminReturns />} />
             <Route path="reports" element={<AdminReports />} />
             <Route path="shop-reports" element={<AdminShopReports />} />
+            <Route path="driver-reports" element={<AdminDriverReports />} />
           </Route>
           <Route path="/manager" element={<Manager />}>
             <Route index element={<Navigate to="/manager/products" replace />} />
