@@ -38,7 +38,7 @@ export function ManagerSidebar() {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel className="text-base">Менеджер Панель</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-base">Панель водителя</SidebarGroupLabel>
 
           <SidebarGroupContent>
             <SidebarMenu>

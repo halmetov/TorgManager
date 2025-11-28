@@ -52,8 +52,18 @@ class ShopUpdate(BaseModel):
 
 class ShopOut(ShopBase):
     id: int
+    debt: float
     manager_id: Optional[int] = None
     manager_name: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class Shop(ShopBase):
+    id: int
+    debt: float
     created_at: datetime
 
     class Config:
@@ -118,6 +128,7 @@ class OrderCreate(BaseModel):
     shop_id: int
     refrigerator_number: str
     items: List[OrderItem]
+    paid_amount: float = 0.0
 
 class ManagerStockItem(BaseModel):
     product_id: int

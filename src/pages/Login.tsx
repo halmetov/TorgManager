@@ -72,7 +72,7 @@ export default function Login() {
           </form>
           <div className="mt-4 text-sm text-muted-foreground text-center">
             <p>Админ: admin / admin</p>
-            <p>Менеджер: создается администратором</p>
+            <p>Водитель: создается администратором</p>
           </div>
         </CardContent>
       </Card>

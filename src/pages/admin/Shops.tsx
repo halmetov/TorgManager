@@ -54,7 +54,7 @@ export default function AdminShops() {
 
   useEffect(() => {
     if (managersError) {
-      const message = managersError instanceof Error ? managersError.message : "Не удалось загрузить менеджеров";
+      const message = managersError instanceof Error ? managersError.message : "Не удалось загрузить водителей";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     }
   }, [managersError, toast]);
@@ -78,13 +78,13 @@ export default function AdminShops() {
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <h1 className="text-3xl font-bold">Магазины</h1>
         <div className="flex w-full flex-col gap-2 md:w-72">
-          <span className="text-sm font-medium text-muted-foreground">Фильтр по менеджеру</span>
+          <span className="text-sm font-medium text-muted-foreground">Фильтр по водителю</span>
           <Select value={selectedManager} onValueChange={setSelectedManager}>
             <SelectTrigger>
-              <SelectValue placeholder="Все менеджеры" />
+              <SelectValue placeholder="Все водители" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Все менеджеры</SelectItem>
+              <SelectItem value="all">Все водители</SelectItem>
               {managerOptions.map((manager) => (
                 <SelectItem key={manager.id} value={String(manager.id)}>
                   {manager.full_name?.trim() || manager.username}
@@ -107,7 +107,7 @@ export default function AdminShops() {
                 <TableHead>Адрес</TableHead>
                 <TableHead>Телефон</TableHead>
                 <TableHead>№ Холодильника</TableHead>
-                <TableHead>Менеджер</TableHead>
+                <TableHead>Водитель</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

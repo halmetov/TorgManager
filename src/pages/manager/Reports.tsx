@@ -281,7 +281,7 @@ export default function ManagerReports() {
           <div className="text-sm text-muted-foreground space-y-1">
             <p>Магазин: {data.shop_name}</p>
             <p>Дата: {formatDateTime(data.created_at)}</p>
-            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+            {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
           </div>
           <div className="overflow-x-auto">
             <Table>
@@ -331,7 +331,7 @@ export default function ManagerReports() {
         <div className="space-y-4">
           <div className="text-sm text-muted-foreground space-y-1">
             <p>Дата: {formatDateTime(data.created_at)}</p>
-            {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+            {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
           </div>
           <div className="overflow-x-auto">
             <Table>
@@ -370,7 +370,7 @@ export default function ManagerReports() {
         <div className="text-sm text-muted-foreground space-y-1">
           <p>Магазин: {data.shop_name}</p>
           <p>Дата: {formatDateTime(data.created_at)}</p>
-          {data.manager_name ? <p>Менеджер: {data.manager_name}</p> : null}
+          {data.manager_name ? <p>Водитель: {data.manager_name}</p> : null}
         </div>
         <div className="overflow-x-auto">
           <Table>

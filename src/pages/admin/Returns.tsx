@@ -160,7 +160,7 @@ export default function AdminReturns() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm text-muted-foreground">Магазин: {data.shop_name}</p>
-              <p className="text-sm text-muted-foreground">Менеджер: {data.manager_name ?? "—"}</p>
+              <p className="text-sm text-muted-foreground">Водитель: {data.manager_name ?? "—"}</p>
               <p className="text-sm text-muted-foreground">Создано: {fmt(data.created_at)}</p>
             </div>
             <Button variant="outline" size="sm" onClick={() => window.print()}>
@@ -201,7 +201,7 @@ export default function AdminReturns() {
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm text-muted-foreground">Создано: {fmt(data.created_at)}</p>
-            <p className="text-sm text-muted-foreground">Менеджер: {data.manager_name ?? "—"}</p>
+            <p className="text-sm text-muted-foreground">Водитель: {data.manager_name ?? "—"}</p>
           </div>
           <Button variant="outline" size="sm" onClick={() => window.print()}>
             Печать
@@ -253,7 +253,7 @@ export default function AdminReturns() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-12">№</TableHead>
-                <TableHead>Менеджер</TableHead>
+                <TableHead>Водитель</TableHead>
                 <TableHead>Дата и время</TableHead>
                 <TableHead className="w-32 text-center">Действия</TableHead>
               </TableRow>
@@ -312,7 +312,7 @@ export default function AdminReturns() {
               <TableRow>
                 <TableHead className="w-12">№</TableHead>
                 <TableHead>Магазин</TableHead>
-                <TableHead>Менеджер</TableHead>
+                <TableHead>Водитель</TableHead>
                 <TableHead>Дата и время</TableHead>
                 <TableHead className="w-32 text-center">Действия</TableHead>
               </TableRow>

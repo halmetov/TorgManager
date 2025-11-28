@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 const items = [
   { title: "Товары", url: "/admin/products", icon: Package },
   { title: "Магазины", url: "/admin/shops", icon: Store },
-  { title: "Менеджеры", url: "/admin/managers", icon: Users },
+  { title: "Водители", url: "/admin/managers", icon: Users },
   { title: "Поступление", url: "/admin/incoming", icon: ArrowDownToLine },
   { title: "Отправка", url: "/admin/dispatch", icon: Truck },
   { title: "Возврат", url: "/admin/returns", icon: RotateCcw },

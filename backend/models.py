@@ -35,6 +35,7 @@ class Shop(Base):
     address = Column(String)
     phone = Column(String)
     refrigerator_number = Column(String)
+    debt = Column(Float, default=0.0)
     manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     manager_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
