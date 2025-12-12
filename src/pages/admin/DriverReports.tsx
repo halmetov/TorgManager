@@ -29,7 +29,7 @@ export default function AdminDriverReports() {
   const { toast } = useToast();
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [managerId, setManagerId] = useState("");
+  const [managerId, setManagerId] = useState("all");
 
   const {
     data: managers = [],
@@ -59,7 +59,7 @@ export default function AdminDriverReports() {
       api.getDriverDailyReports({
         start_date: startDate || undefined,
         end_date: endDate || undefined,
-        manager_id: managerId ? Number(managerId) : undefined,
+        manager_id: managerId === "all" ? undefined : Number(managerId),
       }),
   });
 
@@ -141,7 +141,7 @@ export default function AdminDriverReports() {
                   <SelectValue placeholder={managersLoading ? "Загрузка..." : "Все водители"} />
                 </SelectTrigger>
                 <SelectContent className="bg-background z-50">
-                  <SelectItem value="">Все водители</SelectItem>
+                  <SelectItem value="all">Все водители</SelectItem>
                   {managers.map((manager) => (
                     <SelectItem key={manager.id} value={String(manager.id)}>
                       {manager.full_name || manager.username}
