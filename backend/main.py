@@ -619,6 +619,12 @@ def delete_shop(
     if db_shop.manager_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к магазину")
 
+    if (db_shop.debt or 0) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невозможно удалить магазин с непогашенным долгом. Сначала закройте долг.",
+        )
+
     db.delete(db_shop)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1908,6 +1914,26 @@ def create_driver_daily_report(
         raise HTTPException(status_code=403, detail="Only driver can create this report")
 
     today = date.today()
+    start_dt = datetime.combine(today, time_type.min)
+    end_dt = datetime.combine(today, time_type.max)
+
+    total_received_today = (
+        db.query(func.coalesce(func.sum(models.ShopOrderPayment.paid_amount), 0.0))
+        .join(models.ShopOrder, models.ShopOrderPayment.order_id == models.ShopOrder.id)
+        .filter(
+            models.ShopOrder.manager_id == current_user.id,
+            models.ShopOrder.created_at >= start_dt,
+            models.ShopOrder.created_at <= end_dt,
+        )
+        .scalar()
+    )
+
+    total_entered = data.cash_amount + data.card_amount + data.other_expenses
+    if total_entered > _to_float(total_received_today) + 0.0001:
+        raise HTTPException(
+            status_code=400,
+            detail="Сумма на карте, наличными и расходы не может превышать сумму, полученную сегодня из магазинов.",
+        )
 
     existing = (
         db.query(models.DriverDailyReport)

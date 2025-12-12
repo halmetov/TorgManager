@@ -118,7 +118,8 @@ export default function ManagerShops() {
       toast({ title: "Магазин удалён" });
     },
     onError: (mutationError: any) => {
-      const message = mutationError?.message ?? "Не удалось удалить магазин";
+      const message =
+        mutationError?.data?.detail ?? mutationError?.message ?? "Не удалось удалить магазин";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
