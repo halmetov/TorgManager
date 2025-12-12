@@ -46,6 +46,10 @@ export default function ManagerProducts() {
   const debouncedSearch = useDebouncedValue(search);
   const [returnQuantities, setReturnQuantities] = useState<Record<number, string>>({});
   const [showReportModal, setShowReportModal] = useState(false);
+  const [pendingReturnPayload, setPendingReturnPayload] = useState<
+    { items: { product_id: number; quantity: number }[] } | null
+  >(null);
+  const [isReportSaved, setIsReportSaved] = useState(false);
   const [reportForm, setReportForm] = useState({
     cash_amount: "",
     card_amount: "",
@@ -116,11 +120,13 @@ export default function ManagerProducts() {
     mutationFn: (payload: { items: { product_id: number; quantity: number }[] }) =>
       api.createManagerReturn(payload),
     onSuccess: () => {
-      toast({ title: "Возврат отправлен на склад" });
+      toast({ title: "Товары возвращены, отчёт сохранён" });
       setReturnQuantities({});
       queryClient.invalidateQueries({ queryKey: ["products"] });
       setReportForm({ cash_amount: "", card_amount: "", other_expenses: "", other_details: "" });
-      setShowReportModal(true);
+      setPendingReturnPayload(null);
+      setIsReportSaved(false);
+      setShowReportModal(false);
     },
     onError: (mutationError: unknown) => {
       const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
@@ -170,7 +176,7 @@ export default function ManagerProducts() {
 
   const handleReturnSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (managerReturnMutation.isPending) return;
+    if (managerReturnMutation.isPending || createDailyReportMutation.isPending) return;
 
     if (managerSelectedItems.length === 0) {
       toast({
@@ -203,9 +209,11 @@ export default function ManagerProducts() {
       }
     }
 
-    managerReturnMutation.mutate({
+    setPendingReturnPayload({
       items: managerSelectedItems.map((item) => ({ product_id: item.productId, quantity: item.requested })),
     });
+    setIsReportSaved(false);
+    setShowReportModal(true);
   };
 
   const createDailyReportMutation = useMutation({
@@ -215,20 +223,27 @@ export default function ManagerProducts() {
       other_expenses: number;
       other_details: string;
     }) => api.createDriverDailyReport(payload),
-    onSuccess: () => {
-      toast({ title: "Отчёт за сегодня сохранён" });
-      setShowReportModal(false);
-      setReportForm({ cash_amount: "", card_amount: "", other_expenses: "", other_details: "" });
-    },
     onError: (error: any) => {
       const message = error?.detail || error?.message || "Не удалось сохранить отчёт";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
 
-  const handleReportSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const isProcessingReturn = managerReturnMutation.isPending || createDailyReportMutation.isPending;
+
+  const handleReportSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (createDailyReportMutation.isPending) return;
+    if (createDailyReportMutation.isPending || managerReturnMutation.isPending) return;
+
+    if (!pendingReturnPayload) {
+      toast({
+        title: "Ошибка",
+        description: "Не выбраны товары для возврата",
+        variant: "destructive",
+      });
+      setShowReportModal(false);
+      return;
+    }
 
     const cashAmount = Number(reportForm.cash_amount || 0);
     const cardAmount = Number(reportForm.card_amount || 0);
@@ -243,12 +258,25 @@ export default function ManagerProducts() {
       return;
     }
 
-    createDailyReportMutation.mutate({
-      cash_amount: cashAmount,
-      card_amount: cardAmount,
-      other_expenses: otherExpenses,
-      other_details: reportForm.other_details,
-    });
+    try {
+      if (!isReportSaved) {
+        await createDailyReportMutation.mutateAsync({
+          cash_amount: cashAmount,
+          card_amount: cardAmount,
+          other_expenses: otherExpenses,
+          other_details: reportForm.other_details,
+        });
+        setIsReportSaved(true);
+      }
+    } catch {
+      return;
+    }
+
+    try {
+      await managerReturnMutation.mutateAsync(pendingReturnPayload);
+    } catch {
+      return;
+    }
   };
 
   const handleReportFieldChange = (field: keyof typeof reportForm, value: string) => {
@@ -391,7 +419,7 @@ export default function ManagerProducts() {
             variant="outline"
             size="sm"
             onClick={handleReturnAll}
-            disabled={!hasReturnableProducts || managerReturnMutation.isPending}
+            disabled={!hasReturnableProducts || isProcessingReturn}
           >
             Вернуть всё
           </Button>
@@ -477,8 +505,8 @@ export default function ManagerProducts() {
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">Всего к возврату: {totalReturnRequested}</p>
-              <Button type="submit" className="w-full sm:w-56" disabled={managerReturnMutation.isPending}>
-                {managerReturnMutation.isPending ? "Отправка..." : "Отправить возврат"}
+              <Button type="submit" className="w-full sm:w-56" disabled={isProcessingReturn}>
+                {isProcessingReturn ? "Отправка..." : "Отправить возврат"}
               </Button>
             </div>
           </form>
@@ -593,7 +621,16 @@ export default function ManagerProducts() {
         </CardContent>
       </Card>
 
-      <Dialog open={showReportModal} onOpenChange={setShowReportModal}>
+      <Dialog
+        open={showReportModal}
+        onOpenChange={(open) => {
+          setShowReportModal(open);
+          if (!open) {
+            setIsReportSaved(false);
+            setPendingReturnPayload(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Отчёт за сегодня</DialogTitle>
@@ -649,12 +686,17 @@ export default function ManagerProducts() {
                 type="button"
                 variant="outline"
                 onClick={() => setShowReportModal(false)}
-                disabled={createDailyReportMutation.isPending}
+                disabled={createDailyReportMutation.isPending || managerReturnMutation.isPending}
               >
                 Отмена
               </Button>
-              <Button type="submit" disabled={createDailyReportMutation.isPending}>
-                {createDailyReportMutation.isPending ? "Сохранение..." : "Сохранить отчёт"}
+              <Button
+                type="submit"
+                disabled={createDailyReportMutation.isPending || managerReturnMutation.isPending}
+              >
+                {createDailyReportMutation.isPending || managerReturnMutation.isPending
+                  ? "Сохранение..."
+                  : "Сохранить и отдать товары"}
               </Button>
             </div>
           </form>
