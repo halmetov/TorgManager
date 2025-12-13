@@ -308,6 +308,10 @@ class ApiClient {
     return this.get(`/manager-returns/${id}`);
   }
 
+  async getDriverDailyBalance() {
+    return this.get('/driver/daily-balance');
+  }
+
   async createDriverDailyReport(data: {
     cash_amount: number;
     card_amount: number;

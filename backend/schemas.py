@@ -387,6 +387,12 @@ class DriverDailyReportOut(BaseModel):
         from_attributes = True
 
 
+class DriverBalanceOut(BaseModel):
+    total_received_today: float
+    already_returned_today: float
+    available: float
+
+
 class ManagerDailySummary(BaseModel):
     received_qty: Decimal
     received_amount: Decimal
