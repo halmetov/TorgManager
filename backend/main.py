@@ -1904,6 +1904,55 @@ def get_incoming_detail(
     }
 
 
+def _calculate_driver_daily_balance(db: Session, manager_id: int):
+    today = date.today()
+    start_dt = datetime.combine(today, time_type.min).replace(tzinfo=timezone.utc)
+    end_dt = datetime.combine(today, time_type.max).replace(tzinfo=timezone.utc)
+
+    total_received_today = (
+        db.query(func.coalesce(func.sum(models.ShopOrderPayment.paid_amount), 0.0))
+        .join(models.ShopOrder, models.ShopOrderPayment.order_id == models.ShopOrder.id)
+        .filter(
+            models.ShopOrder.manager_id == manager_id,
+            models.ShopOrder.created_at >= start_dt,
+            models.ShopOrder.created_at <= end_dt,
+        )
+        .scalar()
+    )
+
+    cash_sum = (
+        db.query(func.coalesce(func.sum(models.DriverDailyReport.cash_amount), 0.0))
+        .filter(
+            models.DriverDailyReport.manager_id == manager_id,
+            models.DriverDailyReport.report_date == today,
+        )
+        .scalar()
+    )
+    card_sum = (
+        db.query(func.coalesce(func.sum(models.DriverDailyReport.card_amount), 0.0))
+        .filter(
+            models.DriverDailyReport.manager_id == manager_id,
+            models.DriverDailyReport.report_date == today,
+        )
+        .scalar()
+    )
+    other_sum = (
+        db.query(func.coalesce(func.sum(models.DriverDailyReport.other_expenses), 0.0))
+        .filter(
+            models.DriverDailyReport.manager_id == manager_id,
+            models.DriverDailyReport.report_date == today,
+        )
+        .scalar()
+    )
+
+    already_returned_today = _to_float(cash_sum) + _to_float(card_sum) + _to_float(other_sum)
+    available = _to_float(total_received_today) - already_returned_today
+    if available < 0:
+        available = 0.0
+
+    return today, _to_float(total_received_today), already_returned_today, available
+
+
 @app.post("/driver/daily-report", response_model=schemas.DriverDailyReportOut)
 def create_driver_daily_report(
     data: schemas.DriverDailyReportCreate,
@@ -1913,38 +1962,17 @@ def create_driver_daily_report(
     if current_user.role != "manager":
         raise HTTPException(status_code=403, detail="Only driver can create this report")
 
-    today = date.today()
-    start_dt = datetime.combine(today, time_type.min)
-    end_dt = datetime.combine(today, time_type.max)
-
-    total_received_today = (
-        db.query(func.coalesce(func.sum(models.ShopOrderPayment.paid_amount), 0.0))
-        .join(models.ShopOrder, models.ShopOrderPayment.order_id == models.ShopOrder.id)
-        .filter(
-            models.ShopOrder.manager_id == current_user.id,
-            models.ShopOrder.created_at >= start_dt,
-            models.ShopOrder.created_at <= end_dt,
-        )
-        .scalar()
-    )
+    today, _, _, available = _calculate_driver_daily_balance(db, current_user.id)
 
     total_entered = data.cash_amount + data.card_amount + data.other_expenses
-    if total_entered > _to_float(total_received_today) + 0.0001:
+    if total_entered > available + 0.000001:
         raise HTTPException(
             status_code=400,
-            detail="Сумма на карте, наличными и расходы не может превышать сумму, полученную сегодня из магазинов.",
+            detail=(
+                f"Сумма на карте, наличными и расходы ({total_entered:.2f}) не может превышать "
+                f"доступный остаток за сегодня ({available:.2f})."
+            ),
         )
-
-    existing = (
-        db.query(models.DriverDailyReport)
-        .filter(
-            models.DriverDailyReport.manager_id == current_user.id,
-            models.DriverDailyReport.report_date == today,
-        )
-        .first()
-    )
-    if existing:
-        raise HTTPException(status_code=400, detail="Report for today already exists")
 
     report = models.DriverDailyReport(
         manager_id=current_user.id,
@@ -1958,6 +1986,25 @@ def create_driver_daily_report(
     db.commit()
     db.refresh(report)
     return report
+
+
+@app.get("/driver/daily-balance", response_model=schemas.DriverBalanceOut)
+def get_driver_daily_balance(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != "manager":
+        raise HTTPException(status_code=403, detail="Only driver")
+
+    _, total_received_today, already_returned_today, available = _calculate_driver_daily_balance(
+        db, current_user.id
+    )
+
+    return schemas.DriverBalanceOut(
+        total_received_today=total_received_today,
+        already_returned_today=already_returned_today,
+        available=available,
+    )
 
 
 @app.get("/reports/driver-daily", response_model=List[schemas.DriverDailyReportOut])
