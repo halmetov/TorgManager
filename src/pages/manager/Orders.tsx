@@ -537,10 +537,7 @@ export default function ManagerOrders() {
     return diff > 0 ? diff : 0;
   }, [returnsAmount, totalGoodsAmount]);
 
-  const totalAmount = useMemo(
-    () => calculateItemsTotal(items),
-    [calculateItemsTotal, items],
-  );
+  const orderTotal = useMemo(() => totalGoodsAmount, [totalGoodsAmount]);
 
   const paidAmountNumber = useMemo(() => {
     if (paidAmountInput.trim() === "") {
@@ -553,32 +550,32 @@ export default function ManagerOrders() {
 
   const orderDebt = useMemo(() => {
     if (paidAmountNumber === null || paidAmountNumber < 0) {
-      return payableAmount;
+      return Math.max(orderTotal, 0);
     }
 
-    const diff = payableAmount - paidAmountNumber;
+    const diff = orderTotal - paidAmountNumber;
     return diff > 0 ? diff : 0;
-  }, [paidAmountNumber, payableAmount]);
+  }, [orderTotal, paidAmountNumber]);
 
   const projectedShopDebt = useMemo(() => {
     if (!selectedShop) return null;
     if (paidAmountNumber === null || paidAmountNumber < 0) return null;
 
     const oldDebt = selectedShop.debt ?? 0;
-    const maxAllowed = payableAmount + oldDebt;
+    const maxAllowed = orderTotal + oldDebt;
     if (paidAmountNumber > maxAllowed) return null;
 
-    if (paidAmountNumber < payableAmount) {
-      return oldDebt + (payableAmount - paidAmountNumber);
+    if (paidAmountNumber < orderTotal) {
+      return oldDebt + (orderTotal - paidAmountNumber);
     }
 
-    if (Math.abs(paidAmountNumber - payableAmount) < 1e-6) {
+    if (Math.abs(paidAmountNumber - orderTotal) < 1e-6) {
       return oldDebt;
     }
 
-    const extra = paidAmountNumber - payableAmount;
+    const extra = paidAmountNumber - orderTotal;
     return Math.max(oldDebt - extra, 0);
-  }, [paidAmountNumber, payableAmount, selectedShop]);
+  }, [orderTotal, paidAmountNumber, selectedShop]);
 
   const orderMutation = useMutation({
     mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
@@ -605,7 +602,10 @@ export default function ManagerOrders() {
     },
     onError: (mutationError: unknown) => {
       const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
-      if (error?.status === 409 && error.data?.error === "INSUFFICIENT_STOCK") {
+      if (
+        (error?.status === 400 || error?.status === 409) &&
+        error.data?.error === "INSUFFICIENT_STOCK"
+      ) {
         const shortages: Array<{ product_id: number; requested: number; available: number }> =
           Array.isArray(error.data.items) ? error.data.items : [];
         const lines = shortages.map((shortage) => {
@@ -740,7 +740,7 @@ export default function ManagerOrders() {
 
     const targetShop = selectedShop ?? shops.find((shop) => String(shop.id) === shopId);
     if (targetShop) {
-      const maxAllowed = payableAmount + (targetShop.debt ?? 0);
+      const maxAllowed = orderTotal + (targetShop.debt ?? 0);
       if (paidValue > maxAllowed) {
         const message = "Сумма оплаты превышает сумму заказа и текущий долг магазина";
         setPaidAmountError(message);
@@ -780,7 +780,7 @@ export default function ManagerOrders() {
     }
 
     if (selectedShop) {
-      const maxAllowed = payableAmount + (selectedShop.debt ?? 0);
+      const maxAllowed = orderTotal + (selectedShop.debt ?? 0);
       if (parsed > maxAllowed) {
         setPaidAmountError("Сумма оплаты превышает сумму заказа и текущий долг магазина");
         return;
@@ -1527,8 +1527,8 @@ export default function ManagerOrders() {
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-lg border p-4 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Итого заказа</span>
-                  <span className="text-lg font-semibold">{currencyFormatter.format(totalAmount)}</span>
+                  <span className="text-sm font-medium">Сумма заказа</span>
+                  <span className="text-lg font-semibold">{currencyFormatter.format(orderTotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>К оплате с учётом возврата</span>
