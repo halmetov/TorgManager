@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { CircleDollarSign, Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 
 interface Shop {
   id: number;
@@ -45,12 +45,9 @@ export default function ManagerShops() {
   const queryClient = useQueryClient();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
-  const [isDebtOpen, setIsDebtOpen] = useState(false);
   const [createForm, setCreateForm] = useState<ShopPayload>(emptyForm);
   const [editForm, setEditForm] = useState<ShopPayload>(emptyForm);
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
-  const [debtShop, setDebtShop] = useState<Shop | null>(null);
-  const [debtAmount, setDebtAmount] = useState("");
 
   const {
     data: shops = [],
@@ -77,10 +74,6 @@ export default function ManagerShops() {
 
   const resetCreateForm = () => setCreateForm(emptyForm);
   const resetEditForm = () => setEditForm(emptyForm);
-  const resetDebtForm = () => {
-    setDebtAmount("");
-    setDebtShop(null);
-  };
 
   const createMutation = useMutation({
     mutationFn: (payload: ShopPayload) => api.createShop(payload),
@@ -120,27 +113,6 @@ export default function ManagerShops() {
     onError: (mutationError: any) => {
       const message =
         mutationError?.data?.detail ?? mutationError?.message ?? "Не удалось удалить магазин";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    },
-  });
-
-  const adjustDebtMutation = useMutation({
-    mutationFn: ({ id, amount }: { id: number; amount: number }) => api.adjustShopDebt(id, { amount }),
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["shops", "me"] });
-      const debtValue = typeof data?.debt === "number" ? data.debt : null;
-      toast({
-        title: "Долг обновлён",
-        description:
-          debtValue !== null
-            ? `Текущий долг: ${currencyFormatter.format(debtValue)} ₸`
-            : "Значение долга обновлено",
-      });
-      setIsDebtOpen(false);
-      resetDebtForm();
-    },
-    onError: (mutationError: any) => {
-      const message = mutationError?.message ?? "Не удалось обновить долг";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
@@ -185,25 +157,6 @@ export default function ManagerShops() {
     if (window.confirm(`Удалить магазин "${shop.name}"?`)) {
       deleteMutation.mutate(shop.id);
     }
-  };
-
-  const handleDebtClick = (shop: Shop) => {
-    setDebtShop(shop);
-    setDebtAmount("");
-    setIsDebtOpen(true);
-  };
-
-  const handleDebtSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    if (!debtShop) return;
-
-    const parsed = Number(debtAmount);
-    if (Number.isNaN(parsed)) {
-      toast({ title: "Ошибка", description: "Введите корректную сумму", variant: "destructive" });
-      return;
-    }
-
-    adjustDebtMutation.mutate({ id: debtShop.id, amount: parsed });
   };
 
   return (
@@ -297,14 +250,6 @@ export default function ManagerShops() {
                   </div>
                   <div className="flex items-center justify-end gap-2">
                     <Button
-                      variant="secondary"
-                      size="icon"
-                      onClick={() => handleDebtClick(shop)}
-                      aria-label={`Изменить долг ${shop.name}`}
-                    >
-                      <CircleDollarSign className="h-4 w-4" />
-                    </Button>
-                    <Button
                       variant="outline"
                       size="icon"
                       onClick={() => handleEditClick(shop)}
@@ -335,7 +280,7 @@ export default function ManagerShops() {
                   <TableHead>Телефон</TableHead>
                   <TableHead>№ Холодильника</TableHead>
                   <TableHead>Долг</TableHead>
-                  <TableHead className="w-[180px] text-right">Действия</TableHead>
+                  <TableHead className="w-[140px] text-right">Действия</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -363,14 +308,6 @@ export default function ManagerShops() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
-                          <Button
-                            variant="secondary"
-                            size="icon"
-                            onClick={() => handleDebtClick(shop)}
-                            aria-label={`Изменить долг ${shop.name}`}
-                          >
-                            <CircleDollarSign className="h-4 w-4" />
-                          </Button>
                           <Button
                             variant="outline"
                             size="icon"
@@ -453,42 +390,6 @@ export default function ManagerShops() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={isDebtOpen}
-        onOpenChange={(open) => {
-          setIsDebtOpen(open);
-          if (!open && !adjustDebtMutation.isPending) {
-            resetDebtForm();
-          }
-        }}
-      >
-        <DialogContent className="w-full max-w-[90vw] sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {debtShop ? `Изменить долг магазина ${debtShop.name}` : "Изменить долг"}
-            </DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleDebtSubmit} className="space-y-4">
-            <div>
-              <Label htmlFor="debt-amount">Сумма</Label>
-              <Input
-                id="debt-amount"
-                type="number"
-                step="0.01"
-                value={debtAmount}
-                onChange={(event) => setDebtAmount(event.target.value)}
-                required
-              />
-              <p className="text-sm text-muted-foreground">
-                Положительное число увеличивает долг, отрицательное — уменьшает
-              </p>
-            </div>
-            <Button type="submit" className="w-full" disabled={adjustDebtMutation.isPending || !debtShop}>
-              {adjustDebtMutation.isPending ? "Сохранение..." : "Обновить долг"}
-            </Button>
-          </form>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -2700,6 +2700,8 @@ def create_shop_order(
     if paid_amount < 0:
         raise HTTPException(status_code=400, detail="Оплата не может быть отрицательной")
 
+    old_debt = Decimal(str(shop.debt or 0))
+
     now = datetime.now(timezone.utc)
     total_goods_amount = Decimal("0")
     total_bonus_amount = Decimal("0")
@@ -2748,13 +2750,30 @@ def create_shop_order(
         if payable_amount < 0:
             payable_amount = Decimal("0")
 
+        order_total = payable_amount
+        max_allowed_payment = order_total + old_debt
+        if paid_amount > max_allowed_payment + Decimal("0.000001"):
+            raise HTTPException(
+                status_code=400,
+                detail="Сумма оплаты превышает сумму заказа и весь долг магазина. Уменьшите сумму оплаты.",
+            )
+
         total_amount = total_goods_amount
-        debt_amount = payable_amount - paid_amount
-        if debt_amount < 0:
+
+        if paid_amount < order_total:
+            new_debt = old_debt + (order_total - paid_amount)
+            debt_amount = order_total - paid_amount
+        elif abs(paid_amount - order_total) <= Decimal("0.000001"):
+            new_debt = old_debt
+            debt_amount = Decimal("0")
+        else:
+            extra = paid_amount - order_total
+            new_debt = old_debt - extra
+            if new_debt < 0:
+                new_debt = Decimal("0")
             debt_amount = Decimal("0")
 
-        if debt_amount > 0:
-            shop.debt = (shop.debt or 0.0) + float(debt_amount)
+        shop.debt = float(new_debt)
 
         if return_items:
             shop_return = models.ShopReturn(
