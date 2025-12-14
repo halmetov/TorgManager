@@ -38,6 +38,7 @@ interface ShopInfo {
   id: number;
   name: string;
   address?: string | null;
+  debt?: number | null;
 }
 
 interface ShopOrderItem {
@@ -144,6 +145,11 @@ export default function ManagerOrders() {
     queryKey: ["manager", "shop-orders"],
     queryFn: () => api.getShopOrders() as Promise<ShopOrder[]>,
   });
+
+  const selectedShop = useMemo(
+    () => shops.find((shop) => String(shop.id) === shopId) ?? null,
+    [shopId, shops]
+  );
 
   useEffect(() => {
     if (stockError) {
@@ -536,15 +542,43 @@ export default function ManagerOrders() {
     [calculateItemsTotal, items],
   );
 
-  const estimatedDebt = useMemo(() => {
-    const paid = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
-    if (Number.isNaN(paid) || paid < 0) {
+  const paidAmountNumber = useMemo(() => {
+    if (paidAmountInput.trim() === "") {
+      return 0;
+    }
+
+    const parsed = Number(paidAmountInput);
+    return Number.isNaN(parsed) ? null : parsed;
+  }, [paidAmountInput]);
+
+  const orderDebt = useMemo(() => {
+    if (paidAmountNumber === null || paidAmountNumber < 0) {
       return payableAmount;
     }
 
-    const diff = payableAmount - paid;
+    const diff = payableAmount - paidAmountNumber;
     return diff > 0 ? diff : 0;
-  }, [paidAmountInput, payableAmount]);
+  }, [paidAmountNumber, payableAmount]);
+
+  const projectedShopDebt = useMemo(() => {
+    if (!selectedShop) return null;
+    if (paidAmountNumber === null || paidAmountNumber < 0) return null;
+
+    const oldDebt = selectedShop.debt ?? 0;
+    const maxAllowed = payableAmount + oldDebt;
+    if (paidAmountNumber > maxAllowed) return null;
+
+    if (paidAmountNumber < payableAmount) {
+      return oldDebt + (payableAmount - paidAmountNumber);
+    }
+
+    if (Math.abs(paidAmountNumber - payableAmount) < 1e-6) {
+      return oldDebt;
+    }
+
+    const extra = paidAmountNumber - payableAmount;
+    return Math.max(oldDebt - extra, 0);
+  }, [paidAmountNumber, payableAmount, selectedShop]);
 
   const orderMutation = useMutation({
     mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
@@ -566,6 +600,7 @@ export default function ManagerOrders() {
       setPaidAmountInput("");
       setPaidAmountError(null);
       queryClient.invalidateQueries({ queryKey: ["manager", "stock"] });
+      queryClient.invalidateQueries({ queryKey: ["manager", "shops"] });
       refetchOrders();
     },
     onError: (mutationError: unknown) => {
@@ -583,6 +618,13 @@ export default function ManagerOrders() {
           description: lines.length > 0 ? lines.join("\n") : error.message,
           variant: "destructive",
         });
+        return;
+      }
+
+      if (error?.status === 400 && error.data?.detail) {
+        const detailMessage = String(error.data.detail);
+        setPaidAmountError(detailMessage);
+        toast({ title: "Ошибка", description: detailMessage, variant: "destructive" });
         return;
       }
 
@@ -696,6 +738,17 @@ export default function ManagerOrders() {
       return;
     }
 
+    const targetShop = selectedShop ?? shops.find((shop) => String(shop.id) === shopId);
+    if (targetShop) {
+      const maxAllowed = payableAmount + (targetShop.debt ?? 0);
+      if (paidValue > maxAllowed) {
+        const message = "Сумма оплаты превышает сумму заказа и текущий долг магазина";
+        setPaidAmountError(message);
+        toast({ title: "Ошибка", description: message, variant: "destructive" });
+        return;
+      }
+    }
+
     setPaidAmountError(null);
 
     const payload: ShopOrderCreatePayload = {
@@ -724,6 +777,14 @@ export default function ManagerOrders() {
     if (parsed < 0) {
       setPaidAmountError("Сумма не может быть отрицательной");
       return;
+    }
+
+    if (selectedShop) {
+      const maxAllowed = payableAmount + (selectedShop.debt ?? 0);
+      if (parsed > maxAllowed) {
+        setPaidAmountError("Сумма оплаты превышает сумму заказа и текущий долг магазина");
+        return;
+      }
     }
 
     setPaidAmountError(null);
@@ -775,6 +836,11 @@ export default function ManagerOrders() {
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-sm text-muted-foreground">
+                {selectedShop
+                  ? `Текущий долг магазина: ${currencyFormatter.format(selectedShop.debt ?? 0)} ₸`
+                  : "Магазин не выбран"}
+              </p>
             </div>
 
             <div className="space-y-8">
@@ -1470,7 +1536,7 @@ export default function ManagerOrders() {
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Долг по заказу</span>
-                  <span className="text-foreground font-medium">{currencyFormatter.format(estimatedDebt)}</span>
+                  <span className="text-foreground font-medium">{currencyFormatter.format(orderDebt)}</span>
                 </div>
               </div>
               <div className="space-y-2">
@@ -1493,7 +1559,9 @@ export default function ManagerOrders() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">Всего позиций: {totalRequested}</p>
               <p className="text-sm text-muted-foreground">
-                Ожидаемый долг: {currencyFormatter.format(estimatedDebt)}
+                Ожидаемый долг: {projectedShopDebt != null
+                  ? currencyFormatter.format(projectedShopDebt)
+                  : "—"}
               </p>
               <Button type="submit" className="w-full sm:w-56" disabled={orderMutation.isPending}>
                 {orderMutation.isPending ? "Отправка..." : "Отдать"}
