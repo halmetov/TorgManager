@@ -69,6 +69,22 @@ class Shop(ShopBase):
     class Config:
         from_attributes = True
 
+
+class ShopDebtPaymentCreate(BaseModel):
+    shop_id: int
+    amount: float
+
+
+class ShopDebtPaymentOut(BaseModel):
+    id: int
+    shop_id: int
+    manager_id: int
+    amount: float
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 class ManagerBase(BaseModel):
     username: str
     full_name: str

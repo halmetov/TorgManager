@@ -527,15 +527,15 @@ export default function ManagerOrders() {
     [bonusItemsList]
   );
 
-  const returnsAmount = useMemo(
+  const returnsTotal = useMemo(
     () => calculateItemsTotal(returnItemsList),
     [calculateItemsTotal, returnItemsList],
   );
 
   const payableAmount = useMemo(() => {
-    const diff = totalGoodsAmount - returnsAmount;
+    const diff = totalGoodsAmount - returnsTotal;
     return diff > 0 ? diff : 0;
-  }, [returnsAmount, totalGoodsAmount]);
+  }, [returnsTotal, totalGoodsAmount]);
 
   const orderTotal = useMemo(() => totalGoodsAmount, [totalGoodsAmount]);
 
@@ -550,32 +550,48 @@ export default function ManagerOrders() {
 
   const orderDebt = useMemo(() => {
     if (paidAmountNumber === null || paidAmountNumber < 0) {
-      return Math.max(orderTotal, 0);
+      return Math.max(payableAmount, 0);
     }
 
-    const diff = orderTotal - paidAmountNumber;
+    const diff = payableAmount - paidAmountNumber;
     return diff > 0 ? diff : 0;
-  }, [orderTotal, paidAmountNumber]);
+  }, [payableAmount, paidAmountNumber]);
 
   const projectedShopDebt = useMemo(() => {
     if (!selectedShop) return null;
     if (paidAmountNumber === null || paidAmountNumber < 0) return null;
 
     const oldDebt = selectedShop.debt ?? 0;
-    const maxAllowed = orderTotal + oldDebt;
+    const maxAllowed = payableAmount + oldDebt;
     if (paidAmountNumber > maxAllowed) return null;
 
-    if (paidAmountNumber < orderTotal) {
-      return oldDebt + (orderTotal - paidAmountNumber);
+    if (paidAmountNumber < payableAmount) {
+      return oldDebt + (payableAmount - paidAmountNumber);
     }
 
-    if (Math.abs(paidAmountNumber - orderTotal) < 1e-6) {
+    if (Math.abs(paidAmountNumber - payableAmount) < 1e-6) {
       return oldDebt;
     }
 
-    const extra = paidAmountNumber - orderTotal;
+    const extra = paidAmountNumber - payableAmount;
     return Math.max(oldDebt - extra, 0);
-  }, [orderTotal, paidAmountNumber, selectedShop]);
+  }, [payableAmount, paidAmountNumber, selectedShop]);
+
+  const detailBonusTotal = useMemo(() => {
+    if (!detailOrder) return 0;
+
+    return detailOrder.items.reduce((sum, item) => {
+      if (!item.is_bonus) return sum;
+
+      const priceValue = Number(item.price ?? 0);
+      const quantityValue = Number(item.quantity ?? 0);
+      if (Number.isNaN(priceValue) || Number.isNaN(quantityValue)) {
+        return sum;
+      }
+
+      return sum + priceValue * quantityValue;
+    }, 0);
+  }, [detailOrder]);
 
   const orderMutation = useMutation({
     mutationFn: (payload: ShopOrderCreatePayload) => api.createShopOrder(payload),
@@ -633,21 +649,74 @@ export default function ManagerOrders() {
     },
   });
 
+  const payDebtMutation = useMutation({
+    mutationFn: (payload: { shopId: number; amount: number }) =>
+      api.payShopDebt(payload.shopId, { amount: payload.amount }),
+    onSuccess: () => {
+      toast({ title: "Долг уменьшен" });
+      setPaidAmountInput("");
+      setPaidAmountError(null);
+      queryClient.invalidateQueries({ queryKey: ["manager", "shops"] });
+    },
+    onError: (mutationError: unknown) => {
+      const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
+      const detailMessage = error?.data?.detail || error?.message || "Не удалось погасить долг";
+      setPaidAmountError(String(detailMessage));
+      toast({ title: "Ошибка", description: String(detailMessage), variant: "destructive" });
+    },
+  });
+
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (orderMutation.isPending) return;
+    if (submissionInProgress) return;
 
     if (!shopId) {
       toast({ title: "Ошибка", description: "Выберите магазин", variant: "destructive" });
       return;
     }
 
-    if (items.length === 0 && returnItems.length === 0) {
-      toast({
-        title: "Ошибка",
-        description: "Добавьте хотя бы один товар или позицию возврата",
-        variant: "destructive",
-      });
+    const paidValue = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
+    if (Number.isNaN(paidValue)) {
+      const message = "Введите корректную сумму оплаты";
+      setPaidAmountError(message);
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+      return;
+    }
+
+    if (paidValue < 0) {
+      const message = "Сумма не может быть отрицательной";
+      setPaidAmountError(message);
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+      return;
+    }
+
+    const targetShop = selectedShop ?? shops.find((shop) => String(shop.id) === shopId);
+
+    if (!hasGoods) {
+      if (paidValue <= 0) {
+        const message = "Выберите товары или укажите сумму для погашения долга";
+        setPaidAmountError(message);
+        toast({ title: "Ошибка", description: message, variant: "destructive" });
+        return;
+      }
+
+      const currentDebt = targetShop?.debt ?? 0;
+      if (currentDebt <= 0) {
+        const message = "У магазина нет долга";
+        setPaidAmountError(message);
+        toast({ title: "Ошибка", description: message, variant: "destructive" });
+        return;
+      }
+
+      if (paidValue > currentDebt) {
+        const message = "Сумма превышает долг";
+        setPaidAmountError(message);
+        toast({ title: "Ошибка", description: message, variant: "destructive" });
+        return;
+      }
+
+      setPaidAmountError(null);
+      payDebtMutation.mutate({ shopId: Number(shopId), amount: paidValue });
       return;
     }
 
@@ -724,23 +793,8 @@ export default function ManagerOrders() {
         };
       }),
     ];
-
-    const paidValue = paidAmountInput.trim() === "" ? 0 : Number(paidAmountInput);
-    if (Number.isNaN(paidValue)) {
-      setPaidAmountError("Введите корректную сумму оплаты");
-      toast({ title: "Ошибка", description: "Введите корректную сумму оплаты", variant: "destructive" });
-      return;
-    }
-
-    if (paidValue < 0) {
-      setPaidAmountError("Сумма не может быть отрицательной");
-      toast({ title: "Ошибка", description: "Сумма не может быть отрицательной", variant: "destructive" });
-      return;
-    }
-
-    const targetShop = selectedShop ?? shops.find((shop) => String(shop.id) === shopId);
     if (targetShop) {
-      const maxAllowed = orderTotal + (targetShop.debt ?? 0);
+      const maxAllowed = payableAmount + (targetShop.debt ?? 0);
       if (paidValue > maxAllowed) {
         const message = "Сумма оплаты превышает сумму заказа и текущий долг магазина";
         setPaidAmountError(message);
@@ -761,6 +815,8 @@ export default function ManagerOrders() {
   };
 
   const totalRequested = totalGoodsQuantity + totalBonusQuantity;
+  const hasGoods = items.length > 0 || returnItems.length > 0;
+  const submissionInProgress = orderMutation.isPending || payDebtMutation.isPending;
   const handlePaidAmountChange = (value: string) => {
     setPaidAmountInput(value);
     if (value.trim() === "") {
@@ -780,7 +836,7 @@ export default function ManagerOrders() {
     }
 
     if (selectedShop) {
-      const maxAllowed = orderTotal + (selectedShop.debt ?? 0);
+      const maxAllowed = payableAmount + (selectedShop.debt ?? 0);
       if (parsed > maxAllowed) {
         setPaidAmountError("Сумма оплаты превышает сумму заказа и текущий долг магазина");
         return;
@@ -1515,8 +1571,8 @@ export default function ManagerOrders() {
                 <p className="text-sm">Сумма: {currencyFormatter.format(totalBonusAmount)}</p>
               </div>
               <div className="rounded-lg border p-3 space-y-1">
-                <p className="text-xs uppercase text-muted-foreground">Возврат</p>
-                <p className="text-sm">Сумма: {currencyFormatter.format(returnsAmount)}</p>
+                <p className="text-xs uppercase text-muted-foreground">Сумма возвратов</p>
+                <p className="text-sm">{currencyFormatter.format(returnsTotal)}</p>
               </div>
               <div className="rounded-lg border p-3 space-y-1">
                 <p className="text-xs uppercase text-muted-foreground">К оплате</p>
@@ -1531,7 +1587,15 @@ export default function ManagerOrders() {
                   <span className="text-lg font-semibold">{currencyFormatter.format(orderTotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
-                  <span>К оплате с учётом возврата</span>
+                  <span>Сумма возвратов</span>
+                  <span className="text-foreground font-medium">{currencyFormatter.format(returnsTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>Бонус</span>
+                  <span className="text-foreground font-medium">{currencyFormatter.format(totalBonusAmount)}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>К оплате</span>
                   <span className="text-foreground font-medium">{currencyFormatter.format(payableAmount)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
@@ -1540,7 +1604,14 @@ export default function ManagerOrders() {
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="paid-now">Сколько магазин платит сейчас</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="paid-now">Сколько магазин платит сейчас</Label>
+                  {selectedShop && (
+                    <span className="text-xs text-muted-foreground">
+                      Текущий долг: {currencyFormatter.format(selectedShop.debt ?? 0)}
+                    </span>
+                  )}
+                </div>
                 <Input
                   id="paid-now"
                   type="number"
@@ -1551,7 +1622,8 @@ export default function ManagerOrders() {
                   placeholder="0"
                 />
                 <p className={`text-sm ${paidAmountError ? "text-destructive" : "text-muted-foreground"}`}>
-                  {paidAmountError ?? "Можно указать 0, если оплата не производится"}
+                  {paidAmountError ??
+                    "Можно указать 0, если оплата не производится. Можно погасить долг без товаров: введите сумму и нажмите Отдать"}
                 </p>
               </div>
             </div>
@@ -1563,8 +1635,8 @@ export default function ManagerOrders() {
                   ? currencyFormatter.format(projectedShopDebt)
                   : "—"}
               </p>
-              <Button type="submit" className="w-full sm:w-56" disabled={orderMutation.isPending}>
-                {orderMutation.isPending ? "Отправка..." : "Отдать"}
+              <Button type="submit" className="w-full sm:w-56" disabled={submissionInProgress}>
+                {submissionInProgress ? "Отправка..." : hasGoods ? "Отдать" : "Погасить долг"}
               </Button>
             </div>
           </form>
@@ -1685,10 +1757,9 @@ export default function ManagerOrders() {
                 </Table>
               </div>
               <div className="text-sm text-muted-foreground space-y-1">
-                <p>
-                  Сумма обычных товаров: {currencyFormatter.format(detailOrder.payment?.total_goods_amount ?? 0)}
-                </p>
-                <p>Возврат: {currencyFormatter.format(detailOrder.payment?.returns_amount ?? 0)}</p>
+                <p>Сумма заказа: {currencyFormatter.format(detailOrder.payment?.total_goods_amount ?? 0)}</p>
+                <p>Сумма возвратов: {currencyFormatter.format(detailOrder.payment?.returns_amount ?? 0)}</p>
+                <p>Бонус: {currencyFormatter.format(detailBonusTotal)}</p>
                 <p>К оплате: {currencyFormatter.format(detailOrder.payment?.payable_amount ?? 0)}</p>
                 <p>Оплачено: {currencyFormatter.format(detailOrder.payment?.paid_amount ?? 0)}</p>
                 <p>Долг: {currencyFormatter.format(detailOrder.payment?.debt_amount ?? 0)}</p>

@@ -653,6 +653,43 @@ def adjust_shop_debt(
     db.refresh(shop)
     return {"shop_id": shop.id, "debt": shop.debt}
 
+
+@app.post("/shops/{shop_id}/pay-debt", response_model=schemas.ShopDebtPaymentOut)
+def pay_shop_debt(
+    shop_id: int,
+    data: schemas.ShopDebtPaymentCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("manager", "admin"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    if data.amount <= 0:
+        raise HTTPException(status_code=400, detail="Сумма должна быть больше 0")
+
+    shop = db.query(models.Shop).filter(models.Shop.id == shop_id).first()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    old_debt = shop.debt or 0.0
+    if old_debt <= 0:
+        raise HTTPException(status_code=400, detail="У магазина нет долга")
+
+    if data.amount > old_debt + 1e-6:
+        raise HTTPException(status_code=400, detail="Сумма превышает текущий долг магазина")
+
+    shop.debt = old_debt - data.amount
+
+    payment = models.ShopDebtPayment(
+        shop_id=shop_id,
+        manager_id=current_user.id,
+        amount=data.amount,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    return payment
+
 # Managers endpoints
 @app.get("/managers", response_model=List[schemas.Manager])
 def get_managers(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -2744,7 +2781,7 @@ def create_shop_order(
             payable_amount = Decimal("0")
 
         order_total = total_goods_amount
-        max_allowed_payment = order_total + old_debt
+        max_allowed_payment = payable_amount + old_debt
         if paid_amount > max_allowed_payment + Decimal("0.000001"):
             raise HTTPException(
                 status_code=400,
@@ -2753,14 +2790,14 @@ def create_shop_order(
 
         total_amount = order_total
 
-        if paid_amount < order_total:
-            new_debt = old_debt + (order_total - paid_amount)
-            debt_amount = order_total - paid_amount
-        elif abs(paid_amount - order_total) <= Decimal("0.000001"):
+        if paid_amount < payable_amount:
+            new_debt = old_debt + (payable_amount - paid_amount)
+            debt_amount = payable_amount - paid_amount
+        elif abs(paid_amount - payable_amount) <= Decimal("0.000001"):
             new_debt = old_debt
             debt_amount = Decimal("0")
         else:
-            extra = paid_amount - order_total
+            extra = paid_amount - payable_amount
             new_debt = old_debt - extra
             if new_debt < 0:
                 new_debt = Decimal("0")

@@ -162,6 +162,19 @@ class ShopOrderPayment(Base):
     order = relationship("ShopOrder", back_populates="payment")
 
 
+class ShopDebtPayment(Base):
+    __tablename__ = "shop_debt_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shop_id = Column(Integer, ForeignKey("shops.id"), nullable=False)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    shop = relationship("Shop")
+    manager = relationship("User")
+
+
 class ShopReturn(Base):
     __tablename__ = "shop_returns"
 
