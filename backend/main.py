@@ -808,7 +808,7 @@ def create_dispatch(
     product_ids = list(aggregated.keys())
     archived_column = getattr(models.Product, "is_archived", None)
 
-    products_query = db.query(models.Product.id, models.Product.quantity).filter(
+    products_query = db.query(models.Product).filter(
         models.Product.id.in_(product_ids),
         models.Product.manager_id.is_(None),
         models.Product.is_return.is_(False),
@@ -816,19 +816,19 @@ def create_dispatch(
     if archived_column is not None:
         products_query = products_query.filter(archived_column.is_(False))
 
-    products = products_query.all()
-    found_ids = {row.id for row in products}
-    missing_ids = [str(pid) for pid in product_ids if pid not in found_ids]
+    products = products_query.with_for_update().all()
+    product_map = {product.id: product for product in products}
+    missing_ids = [str(pid) for pid in product_ids if pid not in product_map]
     if missing_ids:
         raise HTTPException(
             status_code=404,
             detail=f"Product(s) not found in admin inventory: {', '.join(missing_ids)}",
         )
 
-    availability = {row.id: row.quantity for row in products}
     insufficient: List[Dict[str, Any]] = []
     for product_id, data in aggregated.items():
-        available = availability.get(product_id, 0)
+        product = product_map[product_id]
+        available = product.quantity or 0
         requested = data["quantity"]
         if requested > available:
             insufficient.append(
@@ -841,8 +841,8 @@ def create_dispatch(
 
     if insufficient:
         raise HTTPException(
-            status_code=409,
-            detail={"error": "INSUFFICIENT_STOCK", "items": insufficient},
+            status_code=400,
+            detail={"error": "INSUFFICIENT_STOCK", "message": "Не хватает товара на складе", "items": insufficient},
         )
 
     validated_items: List[Dict[str, Any]] = [
@@ -877,6 +877,9 @@ def create_dispatch(
         )
 
         for item in validated_items:
+            product = product_map[item["product_id"]]
+            product.quantity = (product.quantity or 0) - item["quantity"]
+
             db.execute(
                 item_stmt,
                 {
@@ -991,6 +994,8 @@ def accept_dispatch(
         raise HTTPException(status_code=403, detail="Нет доступа к отправке")
 
     status_value = dispatch_row["status"] or "pending"
+    if status_value == "sent":
+        raise HTTPException(status_code=400, detail="Отправка уже принята")
     if status_value != "pending":
         raise HTTPException(status_code=400, detail="Отправка уже обработана")
 
@@ -1010,7 +1015,6 @@ def accept_dispatch(
         raise HTTPException(status_code=400, detail="У отправки нет позиций")
 
     archived_column = getattr(models.Product, "is_archived", None)
-    missing: List[Dict[str, Any]] = []
     products_for_update: Dict[int, models.Product] = {}
 
     try:
@@ -1023,30 +1027,15 @@ def accept_dispatch(
             if archived_column is not None:
                 product_query = product_query.filter(archived_column.is_(False))
 
-            product = product_query.with_for_update().first()
+            product = product_query.first()
 
             if not product:
                 raise HTTPException(status_code=404, detail=f"Товар {item['product_id']} не найден на складе")
 
-            available = product.quantity
-            required_qty = item["quantity"]
-            if available < required_qty:
-                missing.append(
-                    {
-                        "product_id": item["product_id"],
-                        "required": required_qty,
-                        "available": available,
-                    }
-                )
-
             products_for_update[item["product_id"]] = product
-
-        if missing:
-            raise HTTPException(status_code=409, detail=missing)
 
         for item in items:
             product = products_for_update[item["product_id"]]
-            product.quantity -= item["quantity"]
 
             manager_product_query = db.query(models.Product).filter(
                 models.Product.manager_id == current_user.id,
@@ -1056,7 +1045,7 @@ def accept_dispatch(
             if archived_column is not None:
                 manager_product_query = manager_product_query.filter(archived_column.is_(False))
 
-            manager_product = manager_product_query.first()
+            manager_product = manager_product_query.with_for_update().first()
             price_value = float(item["price"]) if item["price"] is not None else product.price
 
             if manager_product:
@@ -2110,6 +2099,7 @@ def get_admin_shop_period_report(
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
         .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .filter(models.ShopOrderItem.is_return.is_(False))
         .scalar()
         or 0
     )
@@ -2163,6 +2153,7 @@ def get_admin_shop_period_report(
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
         .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .filter(models.ShopOrderItem.is_return.is_(False))
         .group_by(func.date(models.ShopOrder.created_at))
         .all()
     )
@@ -2181,6 +2172,7 @@ def get_admin_shop_period_report(
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
         .filter(models.ShopOrderItem.is_bonus.is_(True))
+        .filter(models.ShopOrderItem.is_return.is_(False))
         .group_by(func.date(models.ShopOrder.created_at))
         .all()
     )
@@ -2252,6 +2244,7 @@ def get_admin_shop_period_report(
         .filter(models.ShopOrder.shop_id == shop_id)
         .filter(models.ShopOrder.created_at >= range_start, models.ShopOrder.created_at < range_end)
         .filter(models.ShopOrderItem.is_bonus.is_(False))
+        .filter(models.ShopOrderItem.is_return.is_(False))
         .group_by(
             models.ShopOrder.id,
             models.ShopOrder.created_at,
@@ -2750,15 +2743,15 @@ def create_shop_order(
         if payable_amount < 0:
             payable_amount = Decimal("0")
 
-        order_total = payable_amount
+        order_total = total_goods_amount
         max_allowed_payment = order_total + old_debt
         if paid_amount > max_allowed_payment + Decimal("0.000001"):
             raise HTTPException(
                 status_code=400,
-                detail="Сумма оплаты превышает сумму заказа и весь долг магазина. Уменьшите сумму оплаты.",
+                detail="Сумма оплаты превышает заказ + долг",
             )
 
-        total_amount = total_goods_amount
+        total_amount = order_total
 
         if paid_amount < order_total:
             new_debt = old_debt + (order_total - paid_amount)
