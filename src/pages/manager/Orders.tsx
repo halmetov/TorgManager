@@ -661,11 +661,33 @@ export default function ManagerOrders() {
     onError: (mutationError: unknown) => {
       const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
       const detail = error?.data?.detail;
-      const detailMessage =
-        (typeof detail === "string" && detail) ||
-        (error?.data ? JSON.stringify(error.data) : null) ||
-        error?.message ||
-        "Не удалось погасить долг";
+      const detailMessage = (() => {
+        if (Array.isArray(detail)) {
+          const messages = detail
+            .map((item) => {
+              if (typeof item === "string") return item;
+              if (item && typeof item === "object" && "msg" in item && typeof item.msg === "string") {
+                return item.msg;
+              }
+              return JSON.stringify(item);
+            })
+            .filter(Boolean);
+
+          if (messages.length > 0) {
+            return messages.join("\n");
+          }
+        }
+
+        if (detail) {
+          return String(detail);
+        }
+
+        if (error?.data) {
+          return JSON.stringify(error.data);
+        }
+
+        return error?.message || "Не удалось погасить долг";
+      })();
       setPaidAmountError(detailMessage);
       toast({ title: "Ошибка", description: detailMessage, variant: "destructive" });
     },
