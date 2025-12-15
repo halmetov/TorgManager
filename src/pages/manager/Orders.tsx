@@ -651,7 +651,7 @@ export default function ManagerOrders() {
 
   const payDebtMutation = useMutation({
     mutationFn: (payload: { shopId: number; amount: number }) =>
-      api.payShopDebt(payload.shopId, { amount: payload.amount }),
+      api.payShopDebt(payload.shopId, payload.amount),
     onSuccess: () => {
       toast({ title: "Долг уменьшен" });
       setPaidAmountInput("");
@@ -665,7 +665,9 @@ export default function ManagerOrders() {
         typeof detail === "string"
           ? detail
           : Array.isArray(detail)
-            ? detail.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join(", ")
+            ? detail
+                .map((item) => (typeof item?.msg === "string" ? item.msg : JSON.stringify(item)))
+                .join("; ")
             : error?.message || "Не удалось погасить долг";
       setPaidAmountError(detailMessage);
       toast({ title: "Ошибка", description: detailMessage, variant: "destructive" });

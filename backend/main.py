@@ -1947,7 +1947,7 @@ def _calculate_driver_daily_balance(db: Session, manager_id: int):
     start_dt = datetime.combine(today, time_type.min).replace(tzinfo=timezone.utc)
     end_dt = datetime.combine(today, time_type.max).replace(tzinfo=timezone.utc)
 
-    total_received_today = (
+    orders_paid_today = (
         db.query(func.coalesce(func.sum(models.ShopOrderPayment.paid_amount), 0.0))
         .join(models.ShopOrder, models.ShopOrderPayment.order_id == models.ShopOrder.id)
         .filter(
@@ -1957,6 +1957,18 @@ def _calculate_driver_daily_balance(db: Session, manager_id: int):
         )
         .scalar()
     )
+
+    debt_payments_today = (
+        db.query(func.coalesce(func.sum(models.ShopDebtPayment.amount), 0.0))
+        .filter(
+            models.ShopDebtPayment.manager_id == manager_id,
+            models.ShopDebtPayment.created_at >= start_dt,
+            models.ShopDebtPayment.created_at <= end_dt,
+        )
+        .scalar()
+    )
+
+    total_received_today = _to_float(orders_paid_today) + _to_float(debt_payments_today)
 
     cash_sum = (
         db.query(func.coalesce(func.sum(models.DriverDailyReport.cash_amount), 0.0))

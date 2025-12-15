@@ -219,8 +219,8 @@ class ApiClient {
     return this.post(`/shops/${shopId}/adjust-debt`, data);
   }
 
-  async payShopDebt(shopId: number, data: { amount: number }) {
-    return this.post(`/shops/${shopId}/pay-debt`, data);
+  async payShopDebt(shopId: number, amount: number) {
+    return this.post(`/shops/${shopId}/pay-debt`, { amount });
   }
 
   // Managers
