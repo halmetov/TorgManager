@@ -72,6 +72,7 @@ class Shop(ShopBase):
 
 class ShopDebtPaymentCreate(BaseModel):
     amount: float
+    shop_id: Optional[int] = None
 
 
 class ShopDebtPaymentOut(BaseModel):
