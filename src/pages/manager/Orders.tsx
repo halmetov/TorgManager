@@ -660,9 +660,15 @@ export default function ManagerOrders() {
     },
     onError: (mutationError: unknown) => {
       const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
-      const detailMessage = error?.data?.detail || error?.message || "Не удалось погасить долг";
-      setPaidAmountError(String(detailMessage));
-      toast({ title: "Ошибка", description: String(detailMessage), variant: "destructive" });
+      const detail = error?.data?.detail;
+      const detailMessage =
+        typeof detail === "string"
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join(", ")
+            : error?.message || "Не удалось погасить долг";
+      setPaidAmountError(detailMessage);
+      toast({ title: "Ошибка", description: detailMessage, variant: "destructive" });
     },
   });
 
@@ -1581,26 +1587,26 @@ export default function ManagerOrders() {
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-lg border p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Сумма заказа</span>
-                  <span className="text-lg font-semibold">{currencyFormatter.format(orderTotal)}</span>
+              <div className="rounded-lg border p-4 space-y-3">
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>Сумма заказа</span>
+                  <span className="text-foreground">{currencyFormatter.format(orderTotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Сумма возвратов</span>
-                  <span className="text-foreground font-medium">{currencyFormatter.format(returnsTotal)}</span>
+                  <span className="text-foreground">{currencyFormatter.format(returnsTotal)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Бонус</span>
-                  <span className="text-foreground font-medium">{currencyFormatter.format(totalBonusAmount)}</span>
+                  <span className="text-foreground">{currencyFormatter.format(totalBonusAmount)}</span>
                 </div>
-                <div className="flex items-center justify-between text-sm text-muted-foreground">
-                  <span>К оплате</span>
-                  <span className="text-foreground font-medium">{currencyFormatter.format(payableAmount)}</span>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span className="text-base font-semibold text-foreground">К оплате</span>
+                  <span className="text-xl font-semibold text-foreground">{currencyFormatter.format(payableAmount)}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>Долг по заказу</span>
-                  <span className="text-foreground font-medium">{currencyFormatter.format(orderDebt)}</span>
+                  <span className="text-foreground">{currencyFormatter.format(orderDebt)}</span>
                 </div>
               </div>
               <div className="space-y-2">

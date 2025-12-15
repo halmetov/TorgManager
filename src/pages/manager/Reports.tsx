@@ -20,6 +20,7 @@ interface ManagerDailySummary {
   received_amount: string | number;
   delivered_qty: string | number;
   delivered_amount: string | number;
+  bonus_amount: string | number;
   return_to_main_qty: string | number;
   return_to_main_amount: string | number;
   return_from_shops_qty: string | number;
@@ -168,6 +169,7 @@ export default function ManagerReports() {
         label: "Доставлено",
         qty: report?.summary.delivered_qty ?? 0,
         amount: report?.summary.delivered_amount ?? 0,
+        bonusAmount: report?.summary.bonus_amount ?? 0,
       },
       {
         label: "Возврат в главный склад",
@@ -457,6 +459,11 @@ export default function ManagerReports() {
                 <p className="text-sm text-muted-foreground">
                   {isSummaryLoading ? "—" : formatCurrency(card.amount)}
                 </p>
+                {card.bonusAmount !== undefined ? (
+                  <p className="text-xs text-muted-foreground">
+                    {isSummaryLoading ? "—" : `Бонус: ${formatCurrency(card.bonusAmount)}`}
+                  </p>
+                ) : null}
               </CardContent>
             </Card>
           ))}

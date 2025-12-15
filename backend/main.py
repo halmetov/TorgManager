@@ -669,7 +669,7 @@ def pay_shop_debt(
 
     shop = db.query(models.Shop).filter(models.Shop.id == shop_id).first()
     if not shop:
-        raise HTTPException(status_code=404, detail="Shop not found")
+        raise HTTPException(status_code=404, detail="Магазин не найден")
 
     old_debt = shop.debt or 0.0
     if old_debt <= 0:
@@ -1401,6 +1401,17 @@ def _build_manager_daily_report(
         or 0
     )
 
+    delivered_bonus_raw = (
+        db.query(func.coalesce(func.sum(order_price_expr), 0))
+        .join(models.ShopOrder, models.ShopOrderItem.order_id == models.ShopOrder.id)
+        .filter(models.ShopOrder.manager_id == manager.id)
+        .filter(models.ShopOrder.created_at >= start, models.ShopOrder.created_at < end)
+        .filter(models.ShopOrderItem.is_bonus.is_(True))
+        .filter(models.ShopOrderItem.is_return.is_(False))
+        .scalar()
+        or 0
+    )
+
     manager_return_price_column = getattr(models.ManagerReturnItem, "price_at_time", None)
     manager_return_price_expr = models.ManagerReturnItem.quantity * func.coalesce(
         manager_return_price_column
@@ -1486,6 +1497,7 @@ def _build_manager_daily_report(
         received_amount=_to_decimal(received_amount_raw),
         delivered_qty=_to_decimal(delivered_qty_raw),
         delivered_amount=_to_decimal(delivered_amount_raw),
+        bonus_amount=_to_decimal(delivered_bonus_raw),
         return_to_main_qty=_to_decimal(return_to_main_qty_raw),
         return_to_main_amount=_to_decimal(return_to_main_amount_raw),
         return_from_shops_qty=_to_decimal(return_from_shops_qty_raw),

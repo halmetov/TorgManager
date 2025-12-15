@@ -71,7 +71,6 @@ class Shop(ShopBase):
 
 
 class ShopDebtPaymentCreate(BaseModel):
-    shop_id: int
     amount: float
 
 
@@ -415,6 +414,7 @@ class ManagerDailySummary(BaseModel):
 
     delivered_qty: Decimal
     delivered_amount: Decimal
+    bonus_amount: Decimal
 
     return_to_main_qty: Decimal
     return_to_main_amount: Decimal
