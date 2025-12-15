@@ -662,13 +662,10 @@ export default function ManagerOrders() {
       const error = mutationError as (Error & { status?: number; data?: any }) | undefined;
       const detail = error?.data?.detail;
       const detailMessage =
-        typeof detail === "string"
-          ? detail
-          : Array.isArray(detail)
-            ? detail
-                .map((item) => (typeof item?.msg === "string" ? item.msg : JSON.stringify(item)))
-                .join("; ")
-            : error?.message || "Не удалось погасить долг";
+        (typeof detail === "string" && detail) ||
+        (error?.data ? JSON.stringify(error.data) : null) ||
+        error?.message ||
+        "Не удалось погасить долг";
       setPaidAmountError(detailMessage);
       toast({ title: "Ошибка", description: detailMessage, variant: "destructive" });
     },

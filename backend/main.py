@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException, Query, Response, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta, timezone, date
@@ -285,6 +287,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    parts = []
+    for error in exc.errors():
+        loc = " -> ".join(str(x) for x in error.get("loc", []))
+        msg = error.get("msg", "validation error")
+        parts.append(f"{loc}: {msg}")
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "; ".join(parts), "errors": exc.errors()},
+    )
 
 # Security
 SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
