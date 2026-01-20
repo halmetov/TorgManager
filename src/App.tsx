@@ -16,6 +16,9 @@ import AdminReturns from "./pages/admin/Returns";
 import AdminReports from "./pages/admin/Reports";
 import AdminShopReports from "./pages/admin/ShopReports";
 import AdminDriverReports from "./pages/admin/DriverReports";
+import AdminCounterparties from "./pages/admin/Counterparties";
+import AdminSales from "./pages/admin/Sales";
+import AdminCounterpartyReports from "./pages/admin/CounterpartyReports";
 import ManagerProducts from "./pages/manager/Products";
 import ManagerShops from "./pages/manager/Shops";
 import ManagerOrders from "./pages/manager/Orders";
@@ -44,6 +47,9 @@ const App = () => (
             <Route path="reports" element={<AdminReports />} />
             <Route path="shop-reports" element={<AdminShopReports />} />
             <Route path="driver-reports" element={<AdminDriverReports />} />
+            <Route path="counterparties" element={<AdminCounterparties />} />
+            <Route path="sales" element={<AdminSales />} />
+            <Route path="counterparty-reports" element={<AdminCounterpartyReports />} />
           </Route>
           <Route path="/manager" element={<Manager />}>
             <Route index element={<Navigate to="/manager/products" replace />} />

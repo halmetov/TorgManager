@@ -270,6 +270,75 @@ def ensure_return_tables():
 
 ensure_return_tables()
 
+
+def ensure_counterparty_sales_tables():
+    create_counterparties = """
+        CREATE TABLE IF NOT EXISTS counterparties (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            company_name VARCHAR,
+            phone VARCHAR,
+            iin_bin VARCHAR,
+            address VARCHAR,
+            created_at TIMESTAMP DEFAULT NOW(),
+            created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+            is_archived BOOLEAN DEFAULT FALSE
+        )
+    """
+    create_sales_orders = """
+        CREATE TABLE IF NOT EXISTS sales_orders (
+            id SERIAL PRIMARY KEY,
+            counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+            status VARCHAR DEFAULT 'draft',
+            created_at TIMESTAMP DEFAULT NOW(),
+            closed_at TIMESTAMP,
+            created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+            total_amount FLOAT DEFAULT 0,
+            paid_amount FLOAT DEFAULT 0,
+            debt_amount FLOAT DEFAULT 0
+        )
+    """
+    create_sales_order_items = """
+        CREATE TABLE IF NOT EXISTS sales_order_items (
+            id SERIAL PRIMARY KEY,
+            sales_order_id INTEGER REFERENCES sales_orders(id) ON DELETE CASCADE,
+            product_id INTEGER REFERENCES products(id),
+            quantity FLOAT NOT NULL,
+            price_at_time FLOAT NOT NULL,
+            line_total FLOAT NOT NULL
+        )
+    """
+    create_sales_order_payments = """
+        CREATE TABLE IF NOT EXISTS sales_order_payments (
+            id SERIAL PRIMARY KEY,
+            sales_order_id INTEGER REFERENCES sales_orders(id) ON DELETE CASCADE,
+            paid_amount FLOAT NOT NULL,
+            debt_amount FLOAT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """
+    create_warehouse_settings = """
+        CREATE TABLE IF NOT EXISTS warehouse_settings (
+            id SERIAL PRIMARY KEY,
+            company_name VARCHAR,
+            bin VARCHAR,
+            address VARCHAR,
+            phone VARCHAR,
+            bank_details TEXT,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """
+
+    with engine.begin() as connection:
+        connection.execute(text(create_counterparties))
+        connection.execute(text(create_sales_orders))
+        connection.execute(text(create_sales_order_items))
+        connection.execute(text(create_sales_order_payments))
+        connection.execute(text(create_warehouse_settings))
+
+
+ensure_counterparty_sales_tables()
+
 app = FastAPI(title="Confectionery Management System")
 
 ALLOWED_ORIGINS = [
@@ -368,6 +437,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+
+def require_admin(current_user: models.User) -> None:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
 
 # Initialize admin user
 @app.on_event("startup")
@@ -3342,6 +3416,596 @@ def get_manager_return_detail(
     )
 
 
+def _build_sales_order_item_data(
+    db: Session, items: Sequence[schemas.SalesOrderItemInput]
+) -> tuple[list[models.SalesOrderItem], Decimal]:
+    if not items:
+        raise HTTPException(status_code=400, detail="Добавьте товары")
+
+    prepared_items: list[models.SalesOrderItem] = []
+    total_amount = Decimal("0")
+
+    for item in items:
+        product = (
+            db.query(models.Product)
+            .filter(models.Product.id == item.product_id)
+            .first()
+        )
+        if not product:
+            raise HTTPException(status_code=404, detail="Товар не найден")
+        if product.manager_id is not None or product.is_return:
+            raise HTTPException(status_code=400, detail="Товар недоступен на складе")
+
+        price_value = item.price if item.price is not None else product.price or 0
+        quantity_value = Decimal(str(item.quantity))
+        price_decimal = Decimal(str(price_value))
+        line_total = quantity_value * price_decimal
+        total_amount += line_total
+
+        prepared_items.append(
+            models.SalesOrderItem(
+                product_id=product.id,
+                quantity=float(quantity_value),
+                price_at_time=float(price_decimal),
+                line_total=float(line_total),
+            )
+        )
+
+    return prepared_items, total_amount
+
+
+def _serialize_sales_order(order: models.SalesOrder) -> schemas.SalesOrderOut:
+    items = []
+    for item in order.items:
+        items.append(
+            schemas.SalesOrderItemOut(
+                product_id=item.product_id,
+                product_name=item.product.name if item.product else "",
+                quantity=float(item.quantity),
+                price_at_time=float(item.price_at_time),
+                line_total=float(item.line_total),
+            )
+        )
+
+    counterparty = order.counterparty
+    counterparty_data = schemas.SalesOrderCounterpartyOut(
+        id=counterparty.id,
+        name=counterparty.name,
+        company_name=counterparty.company_name,
+        phone=counterparty.phone,
+        iin_bin=counterparty.iin_bin,
+        address=counterparty.address,
+    )
+
+    return schemas.SalesOrderOut(
+        id=order.id,
+        counterparty=counterparty_data,
+        status=order.status,
+        created_at=order.created_at,
+        closed_at=order.closed_at,
+        created_by_admin_id=order.created_by_admin_id,
+        total_amount=float(order.total_amount),
+        paid_amount=float(order.paid_amount),
+        debt_amount=float(order.debt_amount),
+        items=items,
+    )
+
+
+@app.get("/admin/counterparties", response_model=List[schemas.CounterpartyOut])
+def list_counterparties(
+    search: Optional[str] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    query = db.query(models.Counterparty).filter(models.Counterparty.is_archived.is_(False))
+
+    if search:
+        search_value = f"%{search}%"
+        query = query.filter(
+            or_(
+                models.Counterparty.name.ilike(search_value),
+                models.Counterparty.company_name.ilike(search_value),
+                models.Counterparty.phone.ilike(search_value),
+            )
+        )
+
+    return query.order_by(models.Counterparty.name.asc()).all()
+
+
+@app.post("/admin/counterparties", response_model=schemas.CounterpartyOut)
+def create_counterparty(
+    payload: schemas.CounterpartyCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    counterparty = models.Counterparty(
+        name=payload.name,
+        company_name=payload.company_name,
+        phone=payload.phone,
+        iin_bin=payload.iin_bin,
+        address=payload.address,
+        created_by_admin_id=current_user.id,
+    )
+    db.add(counterparty)
+    db.commit()
+    db.refresh(counterparty)
+    return counterparty
+
+
+@app.put("/admin/counterparties/{counterparty_id}", response_model=schemas.CounterpartyOut)
+def update_counterparty(
+    counterparty_id: int,
+    payload: schemas.CounterpartyUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    counterparty = db.query(models.Counterparty).filter(models.Counterparty.id == counterparty_id).first()
+    if not counterparty:
+        raise HTTPException(status_code=404, detail="Контрагент не найден")
+
+    update_data = payload.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(counterparty, key, value)
+
+    db.commit()
+    db.refresh(counterparty)
+    return counterparty
+
+
+@app.delete("/admin/counterparties/{counterparty_id}")
+def archive_counterparty(
+    counterparty_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    counterparty = db.query(models.Counterparty).filter(models.Counterparty.id == counterparty_id).first()
+    if not counterparty:
+        raise HTTPException(status_code=404, detail="Контрагент не найден")
+
+    counterparty.is_archived = True
+    db.commit()
+    return {"status": "archived"}
+
+
+@app.get("/admin/sales-orders", response_model=List[schemas.SalesOrderListItem])
+def list_sales_orders(
+    status: Optional[str] = Query(None),
+    counterparty_id: Optional[int] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    query = db.query(models.SalesOrder).join(models.Counterparty)
+
+    if status:
+        query = query.filter(models.SalesOrder.status == status)
+    if counterparty_id:
+        query = query.filter(models.SalesOrder.counterparty_id == counterparty_id)
+    if date_from:
+        start_dt = datetime.combine(date_from, time_type.min, tzinfo=timezone.utc)
+        query = query.filter(models.SalesOrder.created_at >= start_dt)
+    if date_to:
+        end_dt = datetime.combine(date_to, time_type.max, tzinfo=timezone.utc)
+        query = query.filter(models.SalesOrder.created_at <= end_dt)
+
+    orders = query.order_by(models.SalesOrder.created_at.desc()).all()
+    result: list[schemas.SalesOrderListItem] = []
+    for order in orders:
+        counterparty_name = order.counterparty.name if order.counterparty else ""
+        result.append(
+            schemas.SalesOrderListItem(
+                id=order.id,
+                counterparty_id=order.counterparty_id,
+                counterparty_name=counterparty_name,
+                created_at=order.created_at,
+                status=order.status,
+                total_amount=float(order.total_amount),
+            )
+        )
+    return result
+
+
+@app.get("/admin/sales-orders/{order_id}", response_model=schemas.SalesOrderOut)
+def get_sales_order(
+    order_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    order = (
+        db.query(models.SalesOrder)
+        .options(joinedload(models.SalesOrder.items).joinedload(models.SalesOrderItem.product))
+        .options(joinedload(models.SalesOrder.counterparty))
+        .filter(models.SalesOrder.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+
+    return _serialize_sales_order(order)
+
+
+@app.post("/admin/sales-orders", response_model=schemas.SalesOrderOut)
+def create_sales_order(
+    payload: schemas.SalesOrderCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    counterparty = (
+        db.query(models.Counterparty)
+        .filter(models.Counterparty.id == payload.counterparty_id, models.Counterparty.is_archived.is_(False))
+        .first()
+    )
+    if not counterparty:
+        raise HTTPException(status_code=404, detail="Контрагент не найден")
+
+    items, total_amount = _build_sales_order_item_data(db, payload.items)
+    order = models.SalesOrder(
+        counterparty_id=payload.counterparty_id,
+        status="draft",
+        created_by_admin_id=current_user.id,
+        total_amount=float(total_amount),
+        paid_amount=0.0,
+        debt_amount=0.0,
+        items=items,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    db.refresh(counterparty)
+    return _serialize_sales_order(order)
+
+
+@app.put("/admin/sales-orders/{order_id}", response_model=schemas.SalesOrderOut)
+def update_sales_order(
+    order_id: int,
+    payload: schemas.SalesOrderUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    order = (
+        db.query(models.SalesOrder)
+        .options(joinedload(models.SalesOrder.items))
+        .filter(models.SalesOrder.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+    if order.status == "closed":
+        raise HTTPException(status_code=400, detail="Нельзя менять закрытый заказ")
+
+    if payload.counterparty_id is not None:
+        counterparty = (
+            db.query(models.Counterparty)
+            .filter(models.Counterparty.id == payload.counterparty_id, models.Counterparty.is_archived.is_(False))
+            .first()
+        )
+        if not counterparty:
+            raise HTTPException(status_code=404, detail="Контрагент не найден")
+        order.counterparty_id = payload.counterparty_id
+
+    items, total_amount = _build_sales_order_item_data(db, payload.items)
+    order.items = items
+    order.total_amount = float(total_amount)
+    order.paid_amount = 0.0
+    order.debt_amount = 0.0
+
+    db.commit()
+    db.refresh(order)
+    return _serialize_sales_order(order)
+
+
+@app.post("/admin/sales-orders/{order_id}/close", response_model=schemas.SalesOrderOut)
+def close_sales_order(
+    order_id: int,
+    payload: schemas.SalesOrderClose,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    order = (
+        db.query(models.SalesOrder)
+        .options(joinedload(models.SalesOrder.items).joinedload(models.SalesOrderItem.product))
+        .options(joinedload(models.SalesOrder.counterparty))
+        .filter(models.SalesOrder.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+    if order.status == "closed":
+        raise HTTPException(status_code=400, detail="Нельзя закрыть закрытый заказ")
+
+    if not order.items:
+        raise HTTPException(status_code=400, detail="Добавьте товары")
+
+    total_amount = Decimal("0")
+    for item in order.items:
+        quantity_decimal = Decimal(str(item.quantity))
+        price_decimal = Decimal(str(item.price_at_time))
+        line_total = quantity_decimal * price_decimal
+        item.line_total = float(line_total)
+        total_amount += line_total
+
+    paid_amount = Decimal(str(payload.paid_amount))
+    if paid_amount > total_amount:
+        raise HTTPException(status_code=400, detail="Оплата превышает сумму заказа")
+
+    for item in order.items:
+        product = item.product
+        if not product:
+            raise HTTPException(status_code=404, detail="Товар не найден")
+        if product.quantity is None or float(product.quantity) < float(item.quantity):
+            raise HTTPException(status_code=400, detail="Не хватает товара на складе")
+
+    for item in order.items:
+        product = item.product
+        product.quantity = int(product.quantity - item.quantity)
+
+    order.total_amount = float(total_amount)
+    order.paid_amount = float(paid_amount)
+    order.debt_amount = float(total_amount - paid_amount)
+    order.status = "closed"
+    order.closed_at = datetime.now(timezone.utc)
+
+    payment = models.SalesOrderPayment(
+        sales_order_id=order.id,
+        paid_amount=float(paid_amount),
+        debt_amount=float(total_amount - paid_amount),
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(order)
+    return _serialize_sales_order(order)
+
+
+@app.get("/admin/sales-orders/{order_id}/print")
+def print_sales_order(
+    order_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    order = (
+        db.query(models.SalesOrder)
+        .options(joinedload(models.SalesOrder.items).joinedload(models.SalesOrderItem.product))
+        .options(joinedload(models.SalesOrder.counterparty))
+        .filter(models.SalesOrder.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+
+    settings = db.query(models.WarehouseSettings).first()
+    counterparty = order.counterparty
+    rows_html = ""
+    for index, item in enumerate(order.items, start=1):
+        rows_html += f"""
+        <tr>
+          <td>{index}</td>
+          <td>{item.product.name if item.product else ""}</td>
+          <td>{item.quantity}</td>
+          <td>{item.price_at_time:.2f}</td>
+          <td>{item.line_total:.2f}</td>
+        </tr>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Продажа #{order.id}</title>
+        <style>
+          body {{ font-family: Arial, sans-serif; padding: 24px; color: #111; }}
+          h1, h2 {{ margin: 0 0 8px; }}
+          .section {{ margin-bottom: 16px; }}
+          table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+          th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+          th {{ background: #f4f4f4; }}
+          .totals {{ margin-top: 12px; }}
+          .totals div {{ margin-bottom: 4px; }}
+          @media print {{
+            button {{ display: none; }}
+          }}
+        </style>
+      </head>
+      <body>
+        <h1>Продажа №{order.id}</h1>
+        <div class="section">
+          <strong>Дата:</strong> {order.closed_at or order.created_at}
+        </div>
+        <div class="section">
+          <h2>Реквизиты контрагента</h2>
+          <div>{counterparty.name}</div>
+          <div>{counterparty.company_name or ""}</div>
+          <div>{counterparty.phone or ""}</div>
+          <div>{counterparty.iin_bin or ""}</div>
+          <div>{counterparty.address or ""}</div>
+        </div>
+        <div class="section">
+          <h2>Реквизиты склада</h2>
+          <div>{settings.company_name if settings else ""}</div>
+          <div>{settings.bin if settings else ""}</div>
+          <div>{settings.address if settings else ""}</div>
+          <div>{settings.phone if settings else ""}</div>
+          <div>{settings.bank_details if settings else ""}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>Наименование</th>
+              <th>Кол-во</th>
+              <th>Цена</th>
+              <th>Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows_html}
+          </tbody>
+        </table>
+        <div class="totals">
+          <div><strong>Сумма:</strong> {order.total_amount:.2f}</div>
+          <div><strong>Оплачено:</strong> {order.paid_amount:.2f}</div>
+          <div><strong>Долг:</strong> {order.debt_amount:.2f}</div>
+        </div>
+        <script>
+          window.onload = () => window.print();
+        </script>
+      </body>
+    </html>
+    """
+    return Response(content=html, media_type="text/html")
+
+
+@app.get("/admin/warehouse-settings", response_model=schemas.WarehouseSettingsOut)
+def get_warehouse_settings(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    settings = db.query(models.WarehouseSettings).first()
+    if not settings:
+        settings = models.WarehouseSettings(
+            company_name="",
+            bin="",
+            address="",
+            phone="",
+            bank_details="",
+        )
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+@app.put("/admin/warehouse-settings", response_model=schemas.WarehouseSettingsOut)
+def update_warehouse_settings(
+    payload: schemas.WarehouseSettingsBase,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    settings = db.query(models.WarehouseSettings).first()
+    if not settings:
+        settings = models.WarehouseSettings()
+        db.add(settings)
+
+    update_data = payload.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(settings, key, value)
+
+    settings.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(settings)
+    return settings
+
+
+@app.get("/admin/counterparty-report", response_model=schemas.CounterpartyReportSummary)
+def counterparty_report(
+    counterparty_id: Optional[int] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    if counterparty_id is None:
+        raise HTTPException(status_code=400, detail="Не выбран контрагент")
+
+    query = db.query(models.SalesOrder).filter(
+        models.SalesOrder.status == "closed",
+        models.SalesOrder.counterparty_id == counterparty_id,
+    )
+
+    if date_from:
+        start_dt = datetime.combine(date_from, time_type.min, tzinfo=timezone.utc)
+        query = query.filter(models.SalesOrder.closed_at >= start_dt)
+    if date_to:
+        end_dt = datetime.combine(date_to, time_type.max, tzinfo=timezone.utc)
+        query = query.filter(models.SalesOrder.closed_at <= end_dt)
+
+    orders = query.order_by(models.SalesOrder.closed_at.desc()).all()
+    total_turnover = Decimal("0")
+    total_paid = Decimal("0")
+    total_debt = Decimal("0")
+    rows: list[schemas.CounterpartyReportRow] = []
+
+    for order in orders:
+        total_turnover += Decimal(str(order.total_amount))
+        total_paid += Decimal(str(order.paid_amount))
+        total_debt += Decimal(str(order.debt_amount))
+        rows.append(
+            schemas.CounterpartyReportRow(
+                id=order.id,
+                date=order.closed_at or order.created_at,
+                total=float(order.total_amount),
+                paid=float(order.paid_amount),
+                debt=float(order.debt_amount),
+            )
+        )
+
+    return schemas.CounterpartyReportSummary(
+        total_turnover=float(total_turnover),
+        total_paid=float(total_paid),
+        total_debt=float(total_debt),
+        orders=rows,
+    )
+
+
+@app.get("/admin/counterparty-debts", response_model=List[schemas.CounterpartyDebtItem])
+def counterparty_debts(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    results = (
+        db.query(
+            models.Counterparty.id.label("counterparty_id"),
+            models.Counterparty.name.label("counterparty_name"),
+            func.sum(models.SalesOrder.debt_amount).label("total_debt"),
+            func.max(models.SalesOrder.closed_at).label("last_sale_date"),
+        )
+        .join(models.SalesOrder, models.SalesOrder.counterparty_id == models.Counterparty.id)
+        .filter(models.SalesOrder.status == "closed", models.SalesOrder.debt_amount > 0)
+        .group_by(models.Counterparty.id)
+        .order_by(models.Counterparty.name.asc())
+        .all()
+    )
+
+    return [
+        schemas.CounterpartyDebtItem(
+            counterparty_id=row.counterparty_id,
+            counterparty_name=row.counterparty_name,
+            total_debt=float(row.total_debt or 0),
+            last_sale_date=row.last_sale_date,
+        )
+        for row in results
+    ]
+
+
 @app.get("/manager-returns", response_model=List[schemas.ManagerReturnOut])
 def list_manager_returns(
     current_user: models.User = Depends(get_current_user),
@@ -3361,4 +4025,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

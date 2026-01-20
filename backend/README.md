@@ -85,3 +85,58 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 После запуска сервера документация доступна по адресу:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+
+## SQL для новых таблиц (если нет миграций)
+
+```sql
+CREATE TABLE IF NOT EXISTS counterparties (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    company_name VARCHAR,
+    phone VARCHAR,
+    iin_bin VARCHAR,
+    address VARCHAR,
+    created_at TIMESTAMP DEFAULT NOW(),
+    created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+    is_archived BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS sales_orders (
+    id SERIAL PRIMARY KEY,
+    counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+    status VARCHAR DEFAULT 'draft',
+    created_at TIMESTAMP DEFAULT NOW(),
+    closed_at TIMESTAMP,
+    created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+    total_amount FLOAT DEFAULT 0,
+    paid_amount FLOAT DEFAULT 0,
+    debt_amount FLOAT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sales_order_items (
+    id SERIAL PRIMARY KEY,
+    sales_order_id INTEGER REFERENCES sales_orders(id) ON DELETE CASCADE,
+    product_id INTEGER REFERENCES products(id),
+    quantity FLOAT NOT NULL,
+    price_at_time FLOAT NOT NULL,
+    line_total FLOAT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sales_order_payments (
+    id SERIAL PRIMARY KEY,
+    sales_order_id INTEGER REFERENCES sales_orders(id) ON DELETE CASCADE,
+    paid_amount FLOAT NOT NULL,
+    debt_amount FLOAT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS warehouse_settings (
+    id SERIAL PRIMARY KEY,
+    company_name VARCHAR,
+    bin VARCHAR,
+    address VARCHAR,
+    phone VARCHAR,
+    bank_details TEXT,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
