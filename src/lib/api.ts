@@ -380,5 +380,92 @@ class ApiClient {
     params.set('date_to', dateTo);
     return this.get(`/reports/admin/shop-period?${params.toString()}`);
   }
+
+  // Counterparties
+  async getAdminCounterparties(params?: { search?: string }) {
+    const searchParams = new URLSearchParams();
+    if (params?.search) {
+      searchParams.set('search', params.search);
+    }
+    const query = searchParams.toString();
+    return this.get(`/admin/counterparties${query ? `?${query}` : ''}`);
+  }
+
+  async createAdminCounterparty(data: any) {
+    return this.post('/admin/counterparties', data);
+  }
+
+  async updateAdminCounterparty(id: number, data: any) {
+    return this.put(`/admin/counterparties/${id}`, data);
+  }
+
+  async deleteAdminCounterparty(id: number) {
+    return this.delete(`/admin/counterparties/${id}`);
+  }
+
+  // Sales Orders
+  async getAdminSalesOrders(params?: {
+    status?: string;
+    counterparty_id?: number;
+    date_from?: string;
+    date_to?: string;
+  }) {
+    const searchParams = new URLSearchParams();
+    if (params?.status) {
+      searchParams.set('status', params.status);
+    }
+    if (params?.counterparty_id !== undefined) {
+      searchParams.set('counterparty_id', String(params.counterparty_id));
+    }
+    if (params?.date_from) {
+      searchParams.set('date_from', params.date_from);
+    }
+    if (params?.date_to) {
+      searchParams.set('date_to', params.date_to);
+    }
+    const query = searchParams.toString();
+    return this.get(`/admin/sales-orders${query ? `?${query}` : ''}`);
+  }
+
+  async getAdminSalesOrder(id: number) {
+    return this.get(`/admin/sales-orders/${id}`);
+  }
+
+  async createAdminSalesOrder(data: any) {
+    return this.post('/admin/sales-orders', data);
+  }
+
+  async updateAdminSalesOrder(id: number, data: any) {
+    return this.put(`/admin/sales-orders/${id}`, data);
+  }
+
+  async closeAdminSalesOrder(id: number, data: { paid_amount: number }) {
+    return this.post(`/admin/sales-orders/${id}/close`, data);
+  }
+
+  async getAdminWarehouseSettings() {
+    return this.get('/admin/warehouse-settings');
+  }
+
+  async updateAdminWarehouseSettings(data: any) {
+    return this.put('/admin/warehouse-settings', data);
+  }
+
+  async getCounterpartyReport(params: { counterparty_id: number; date_from?: string; date_to?: string }) {
+    const searchParams = new URLSearchParams();
+    searchParams.set('counterparty_id', String(params.counterparty_id));
+    if (params.date_from) {
+      searchParams.set('date_from', params.date_from);
+    }
+    if (params.date_to) {
+      searchParams.set('date_to', params.date_to);
+    }
+    const query = searchParams.toString();
+    return this.get(`/admin/counterparty-report?${query}`);
+  }
+
+  async getCounterpartyDebts() {
+    return this.get('/admin/counterparty-debts');
+  }
 }
 export const api = new ApiClient(API_BASE_URL);

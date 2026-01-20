@@ -70,6 +70,134 @@ class Shop(ShopBase):
         from_attributes = True
 
 
+class CounterpartyBase(BaseModel):
+    name: str
+    company_name: Optional[str] = None
+    phone: Optional[str] = None
+    iin_bin: Optional[str] = None
+    address: Optional[str] = None
+
+
+class CounterpartyCreate(CounterpartyBase):
+    pass
+
+
+class CounterpartyUpdate(BaseModel):
+    name: Optional[str] = None
+    company_name: Optional[str] = None
+    phone: Optional[str] = None
+    iin_bin: Optional[str] = None
+    address: Optional[str] = None
+    is_archived: Optional[bool] = None
+
+
+class CounterpartyOut(CounterpartyBase):
+    id: int
+    created_at: datetime
+    created_by_admin_id: int
+    is_archived: bool
+
+    class Config:
+        from_attributes = True
+
+
+class SalesOrderItemInput(BaseModel):
+    product_id: int
+    quantity: condecimal(gt=0)
+    price: Optional[condecimal(ge=0)] = None
+
+
+class SalesOrderCreate(BaseModel):
+    counterparty_id: int
+    items: List[SalesOrderItemInput]
+
+
+class SalesOrderUpdate(BaseModel):
+    counterparty_id: Optional[int] = None
+    items: List[SalesOrderItemInput]
+
+
+class SalesOrderClose(BaseModel):
+    paid_amount: condecimal(ge=0)
+
+
+class SalesOrderItemOut(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: float
+    price_at_time: float
+    line_total: float
+
+
+class SalesOrderCounterpartyOut(BaseModel):
+    id: int
+    name: str
+    company_name: Optional[str] = None
+    phone: Optional[str] = None
+    iin_bin: Optional[str] = None
+    address: Optional[str] = None
+
+
+class SalesOrderOut(BaseModel):
+    id: int
+    counterparty: SalesOrderCounterpartyOut
+    status: str
+    created_at: datetime
+    closed_at: Optional[datetime] = None
+    created_by_admin_id: int
+    total_amount: float
+    paid_amount: float
+    debt_amount: float
+    items: List[SalesOrderItemOut]
+
+
+class SalesOrderListItem(BaseModel):
+    id: int
+    counterparty_id: int
+    counterparty_name: str
+    created_at: datetime
+    status: str
+    total_amount: float
+
+
+class WarehouseSettingsBase(BaseModel):
+    company_name: Optional[str] = None
+    bin: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    bank_details: Optional[str] = None
+
+
+class WarehouseSettingsOut(WarehouseSettingsBase):
+    id: int
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CounterpartyReportRow(BaseModel):
+    id: int
+    date: datetime
+    total: float
+    paid: float
+    debt: float
+
+
+class CounterpartyReportSummary(BaseModel):
+    total_turnover: float
+    total_paid: float
+    total_debt: float
+    orders: List[CounterpartyReportRow]
+
+
+class CounterpartyDebtItem(BaseModel):
+    counterparty_id: int
+    counterparty_name: str
+    total_debt: float
+    last_sale_date: Optional[datetime] = None
+
+
 class ShopDebtPaymentCreate(BaseModel):
     amount: float
     shop_id: Optional[int] = None

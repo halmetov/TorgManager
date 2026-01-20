@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Numeric, Date
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Numeric, Date, Text
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime, timezone, date
@@ -41,6 +41,87 @@ class Shop(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     manager = relationship("User", foreign_keys=[manager_id])
+
+
+class Counterparty(Base):
+    __tablename__ = "counterparties"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    company_name = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    iin_bin = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_archived = Column(Boolean, default=False, nullable=False)
+
+    created_by_admin = relationship("User")
+
+
+class SalesOrder(Base):
+    __tablename__ = "sales_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False)
+    status = Column(String, nullable=False, default="draft")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    closed_at = Column(DateTime, nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    total_amount = Column(Float, nullable=False, default=0.0)
+    paid_amount = Column(Float, nullable=False, default=0.0)
+    debt_amount = Column(Float, nullable=False, default=0.0)
+
+    counterparty = relationship("Counterparty")
+    created_by_admin = relationship("User")
+    items = relationship(
+        "SalesOrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
+    payments = relationship(
+        "SalesOrderPayment",
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
+
+
+class SalesOrderItem(Base):
+    __tablename__ = "sales_order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Float, nullable=False)
+    price_at_time = Column(Float, nullable=False)
+    line_total = Column(Float, nullable=False)
+
+    order = relationship("SalesOrder", back_populates="items")
+    product = relationship("Product")
+
+
+class SalesOrderPayment(Base):
+    __tablename__ = "sales_order_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    paid_amount = Column(Float, nullable=False)
+    debt_amount = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    order = relationship("SalesOrder", back_populates="payments")
+
+
+class WarehouseSettings(Base):
+    __tablename__ = "warehouse_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_name = Column(String, nullable=True)
+    bin = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    bank_details = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Dispatch(Base):
     __tablename__ = "dispatches"
