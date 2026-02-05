@@ -120,6 +120,7 @@ class CounterpartySale(Base):
     id = Column(Integer, primary_key=True, index=True)
     counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False)
     created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    driver_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     total_amount = Column(Float, nullable=False, default=0.0)
     paid_kaspi = Column(Float, nullable=False, default=0.0)
@@ -133,6 +134,7 @@ class CounterpartySale(Base):
 
     counterparty = relationship("Counterparty")
     created_by_admin = relationship("User")
+    driver = relationship("User", foreign_keys=[driver_id])
     items = relationship(
         "CounterpartySaleItem",
         back_populates="sale",

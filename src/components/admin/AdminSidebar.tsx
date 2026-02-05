@@ -29,19 +29,25 @@ import {
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
-const items = [
+const systemItems = [
   { title: "Товары", url: "/admin/products", icon: Package },
   { title: "Магазины", url: "/admin/shops", icon: Store },
   { title: "Водители", url: "/admin/managers", icon: Users },
   { title: "Контрагенты", url: "/admin/counterparties", icon: Handshake },
-  { title: "Продажа", url: "/admin/sales", icon: Receipt },
-  { title: "Отчёт по контрагентам", url: "/admin/counterparty-reports", icon: FileSpreadsheet },
-  { title: "Поступление", url: "/admin/incoming", icon: ArrowDownToLine },
-  { title: "Отправка", url: "/admin/dispatch", icon: Truck },
   { title: "Возврат", url: "/admin/returns", icon: RotateCcw },
-  { title: "Отчеты", url: "/admin/reports", icon: FileText },
+];
+
+const reportItems = [
+  { title: "Отчёт по контрагентам", url: "/admin/counterparty-reports", icon: FileSpreadsheet },
   { title: "Отчёт по магазинам", url: "/admin/shop-reports", icon: BarChart3 },
   { title: "Отчёт водителей", url: "/admin/driver-reports", icon: ClipboardList },
+  { title: "Отчеты", url: "/admin/reports", icon: FileText },
+];
+
+const operationItems = [
+  { title: "Продажа", url: "/admin/sales", icon: Receipt },
+  { title: "Поступление", url: "/admin/incoming", icon: ArrowDownToLine },
+  { title: "Отправка", url: "/admin/dispatch", icon: Truck },
 ];
 
 export function AdminSidebar() {
@@ -54,38 +60,48 @@ export function AdminSidebar() {
     navigate("/login");
   };
 
+  const renderMenuItems = (menuItems: typeof systemItems) => (
+    <SidebarMenu>
+      {menuItems.map((item) => (
+        <SidebarMenuItem key={item.title}>
+          <SidebarMenuButton asChild size="lg">
+            <NavLink
+              to={item.url}
+              end
+              onClick={() => {
+                if (isMobile) {
+                  setOpenMobile(false);
+                }
+              }}
+              className={({ isActive }) =>
+                isActive ? "bg-muted text-primary font-medium" : "hover:bg-muted/50"
+              }
+            >
+              <item.icon className="h-5 w-5" />
+              {!collapsed && <span>{item.title}</span>}
+            </NavLink>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ))}
+    </SidebarMenu>
+  );
+
   return (
     <Sidebar className={collapsed ? "w-14" : "w-60"} collapsible="icon">
-
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel className="text-base">Админ Панель</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-base">Операции</SidebarGroupLabel>
+          <SidebarGroupContent>{renderMenuItems(operationItems)}</SidebarGroupContent>
+        </SidebarGroup>
 
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {items.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild size="lg">
-                    <NavLink
-                      to={item.url}
-                      end
-                      onClick={() => {
-                        if (isMobile) {
-                          setOpenMobile(false);
-                        }
-                      }}
-                      className={({ isActive }) =>
-                        isActive ? "bg-muted text-primary font-medium" : "hover:bg-muted/50"
-                      }
-                    >
-                      <item.icon className="h-5 w-5" />
-                      {!collapsed && <span>{item.title}</span>}
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-base">Отчеты</SidebarGroupLabel>
+          <SidebarGroupContent>{renderMenuItems(reportItems)}</SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-base">Система</SidebarGroupLabel>
+          <SidebarGroupContent>{renderMenuItems(systemItems)}</SidebarGroupContent>
         </SidebarGroup>
 
         <div className="mt-auto p-4">

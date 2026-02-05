@@ -27,6 +27,11 @@ interface ProductOption {
   price: number;
 }
 
+interface ManagerOption {
+  id: number;
+  full_name: string;
+}
+
 interface SalesHistoryItem {
   id: number;
   counterparty: CounterpartyOption;
@@ -73,13 +78,12 @@ interface SalesItemForm {
 const formatDateTime = (value: string) =>
   new Date(value).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" });
 
-const apiBaseUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
 export default function AdminSales() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const [counterpartyId, setCounterpartyId] = useState<string>("");
+  const [driverId, setDriverId] = useState<string>("");
   const [items, setItems] = useState<SalesItemForm[]>([]);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState({ kaspi: "", cash: "" });
@@ -101,6 +105,11 @@ export default function AdminSales() {
     queryFn: () => api.getAdminCounterparties(),
   });
 
+  const { data: managers = [], error: managersError } = useQuery({
+    queryKey: ["managers"],
+    queryFn: () => api.getManagers(),
+  });
+
   useEffect(() => {
     if (counterpartiesError) {
       const message =
@@ -108,6 +117,13 @@ export default function AdminSales() {
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     }
   }, [counterpartiesError, toast]);
+
+  useEffect(() => {
+    if (managersError) {
+      const message = managersError instanceof Error ? managersError.message : "Не удалось загрузить водителей";
+      toast({ title: "Ошибка", description: message, variant: "destructive" });
+    }
+  }, [managersError, toast]);
 
   const {
     data: salesHistory = [],
@@ -388,13 +404,14 @@ export default function AdminSales() {
 
     createMutation.mutate({
       counterparty_id: Number(counterpartyId),
+      driver_id: driverId ? Number(driverId) : undefined,
       items: payloadItems,
       payment: { kaspi, cash },
     });
   };
 
   const handlePrint = (saleId: number) => {
-    const url = `${apiBaseUrl}/admin/counterparty-sales/${saleId}/print`;
+    const url = `${window.location.origin}/admin/counterparty-sales/${saleId}/print`;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
@@ -410,6 +427,7 @@ export default function AdminSales() {
   };
 
   const counterpartiesList = Array.isArray(counterparties) ? (counterparties as CounterpartyOption[]) : [];
+  const managersList = Array.isArray(managers) ? (managers as ManagerOption[]) : [];
   const historyList = Array.isArray(salesHistory) ? (salesHistory as SalesHistoryItem[]) : [];
   const detail = saleDetail as SaleDetail | undefined;
 
@@ -422,7 +440,7 @@ export default function AdminSales() {
           <CardTitle>Оптовая продажа контрагенту</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-[2fr_1fr]">
+          <div className="grid gap-4 md:grid-cols-3">
             <div>
               <Label>Контрагент</Label>
               <Select value={counterpartyId} onValueChange={setCounterpartyId}>
@@ -433,6 +451,22 @@ export default function AdminSales() {
                   {counterpartiesList.map((counterparty) => (
                     <SelectItem key={counterparty.id} value={String(counterparty.id)}>
                       {counterparty.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Водитель</Label>
+              <Select value={driverId} onValueChange={setDriverId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите водителя" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">Не выбран</SelectItem>
+                  {managersList.map((manager) => (
+                    <SelectItem key={manager.id} value={String(manager.id)}>
+                      {manager.full_name}
                     </SelectItem>
                   ))}
                 </SelectContent>

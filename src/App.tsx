@@ -19,6 +19,7 @@ import AdminDriverReports from "./pages/admin/DriverReports";
 import AdminCounterparties from "./pages/admin/Counterparties";
 import AdminSales from "./pages/admin/Sales";
 import AdminCounterpartyReports from "./pages/admin/CounterpartyReports";
+import CounterpartySalePrint from "./pages/admin/CounterpartySalePrint";
 import ManagerProducts from "./pages/manager/Products";
 import ManagerShops from "./pages/manager/Shops";
 import ManagerOrders from "./pages/manager/Orders";
@@ -36,6 +37,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/admin/counterparty-sales/:id/print" element={<CounterpartySalePrint />} />
           <Route path="/admin" element={<Admin />}>
             <Route index element={<Navigate to="/admin/products" replace />} />
             <Route path="products" element={<AdminProducts />} />

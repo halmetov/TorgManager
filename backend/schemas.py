@@ -172,6 +172,7 @@ class CounterpartySaleItemCreate(BaseModel):
 
 class CounterpartySaleCreate(BaseModel):
     counterparty_id: int
+    driver_id: Optional[int] = None
     items: List[CounterpartySaleItemCreate]
     payment: CounterpartySalePayment
     note: Optional[str] = None
@@ -217,6 +218,33 @@ class CounterpartySaleListItem(BaseModel):
     paid_total: float
     new_debt_added: float
     debt_after: float
+
+
+class CounterpartySalesReportRow(BaseModel):
+    id: int
+    date: datetime
+    counterparty_id: int
+    counterparty_name: str
+    driver_id: Optional[int] = None
+    driver_name: Optional[str] = None
+    total: float
+    paid_cash: float
+    paid_kaspi: float
+    paid_total: float
+    debt_for_sale: float
+
+
+class CounterpartySalesReportTotals(BaseModel):
+    sales_total: float
+    paid_cash_total: float
+    paid_kaspi_total: float
+    paid_total: float
+    debt_total: float
+
+
+class CounterpartySalesReport(BaseModel):
+    totals: CounterpartySalesReportTotals
+    sales: List[CounterpartySalesReportRow]
 
 
 class CounterpartyDebtPaymentCreate(BaseModel):
