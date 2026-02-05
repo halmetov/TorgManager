@@ -72,27 +72,26 @@ class Shop(ShopBase):
 
 class CounterpartyBase(BaseModel):
     name: str
-    company_name: Optional[str] = None
+    company: Optional[str] = None
     phone: Optional[str] = None
-    iin_bin: Optional[str] = None
     address: Optional[str] = None
 
 
 class CounterpartyCreate(CounterpartyBase):
-    pass
+    debt: Optional[float] = None
 
 
 class CounterpartyUpdate(BaseModel):
     name: Optional[str] = None
-    company_name: Optional[str] = None
+    company: Optional[str] = None
     phone: Optional[str] = None
-    iin_bin: Optional[str] = None
     address: Optional[str] = None
     is_archived: Optional[bool] = None
 
 
 class CounterpartyOut(CounterpartyBase):
     id: int
+    debt: float
     created_at: datetime
     created_by_admin_id: int
     is_archived: bool
@@ -158,6 +157,73 @@ class SalesOrderListItem(BaseModel):
     created_at: datetime
     status: str
     total_amount: float
+
+
+class CounterpartySalePayment(BaseModel):
+    kaspi: condecimal(ge=0) = 0
+    cash: condecimal(ge=0) = 0
+    debt: condecimal(ge=0) = 0
+
+
+class CounterpartySaleItemCreate(BaseModel):
+    product_id: int
+    quantity: condecimal(gt=0)
+    price: condecimal(ge=0)
+
+
+class CounterpartySaleCreate(BaseModel):
+    counterparty_id: int
+    items: List[CounterpartySaleItemCreate]
+    payment: CounterpartySalePayment
+    note: Optional[str] = None
+
+
+class CounterpartyShortOut(BaseModel):
+    id: int
+    name: str
+    company: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+
+class CounterpartySaleItemOut(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: float
+    price_at_time: float
+    line_total: float
+
+
+class CounterpartySaleOut(BaseModel):
+    id: int
+    counterparty: CounterpartyShortOut
+    created_at: datetime
+    total_amount: float
+    paid_kaspi: float
+    paid_cash: float
+    paid_debt: float
+    paid_total: float
+    new_debt_added: float
+    old_debt: float
+    debt_after: float
+    note: Optional[str] = None
+    items: List[CounterpartySaleItemOut]
+
+
+class CounterpartySaleListItem(BaseModel):
+    id: int
+    counterparty: CounterpartyShortOut
+    created_at: datetime
+    total_amount: float
+    paid_total: float
+    new_debt_added: float
+    debt_after: float
+
+
+class CounterpartyDebtPaymentCreate(BaseModel):
+    amount: condecimal(gt=0)
+    method: Literal["kaspi", "cash"]
+    comment: Optional[str] = None
 
 
 class WarehouseSettingsBase(BaseModel):

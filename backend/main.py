@@ -280,6 +280,7 @@ def ensure_counterparty_sales_tables():
             phone VARCHAR,
             iin_bin VARCHAR,
             address VARCHAR,
+            debt FLOAT NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT NOW(),
             created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
             is_archived BOOLEAN DEFAULT FALSE
@@ -338,6 +339,124 @@ def ensure_counterparty_sales_tables():
 
 
 ensure_counterparty_sales_tables()
+
+
+def ensure_counterparty_columns():
+    inspector = inspect(engine)
+    try:
+        columns = {column["name"] for column in inspector.get_columns("counterparties")}
+    except Exception:
+        return
+
+    statements = []
+    if "debt" not in columns:
+        statements.append("ALTER TABLE counterparties ADD COLUMN IF NOT EXISTS debt FLOAT DEFAULT 0")
+
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+            connection.execute(text("UPDATE counterparties SET debt = COALESCE(debt, 0)"))
+
+
+def ensure_counterparty_trade_tables():
+    """
+    SQL (manual migration helper):
+    CREATE TABLE IF NOT EXISTS counterparties (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR NOT NULL,
+        company_name VARCHAR,
+        phone VARCHAR,
+        address VARCHAR,
+        debt FLOAT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+        is_archived BOOLEAN DEFAULT FALSE
+    );
+    CREATE TABLE IF NOT EXISTS counterparty_sales (
+        id SERIAL PRIMARY KEY,
+        counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+        created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW(),
+        total_amount FLOAT NOT NULL DEFAULT 0,
+        paid_kaspi FLOAT NOT NULL DEFAULT 0,
+        paid_cash FLOAT NOT NULL DEFAULT 0,
+        paid_debt FLOAT NOT NULL DEFAULT 0,
+        paid_total FLOAT NOT NULL DEFAULT 0,
+        new_debt_added FLOAT NOT NULL DEFAULT 0,
+        old_debt FLOAT NOT NULL DEFAULT 0,
+        debt_after FLOAT NOT NULL DEFAULT 0,
+        note VARCHAR
+    );
+    CREATE TABLE IF NOT EXISTS counterparty_sale_items (
+        id SERIAL PRIMARY KEY,
+        sale_id INTEGER REFERENCES counterparty_sales(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id),
+        quantity FLOAT NOT NULL,
+        price_at_time FLOAT NOT NULL,
+        line_total FLOAT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS counterparty_debt_payments (
+        id SERIAL PRIMARY KEY,
+        counterparty_id INTEGER REFERENCES counterparties(id),
+        amount FLOAT NOT NULL,
+        pay_method VARCHAR NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        created_by_admin_id INTEGER REFERENCES users(id),
+        debt_before FLOAT NOT NULL,
+        debt_after FLOAT NOT NULL,
+        comment VARCHAR
+    );
+    """
+    create_sales = """
+        CREATE TABLE IF NOT EXISTS counterparty_sales (
+            id SERIAL PRIMARY KEY,
+            counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+            created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT NOW(),
+            total_amount FLOAT NOT NULL DEFAULT 0,
+            paid_kaspi FLOAT NOT NULL DEFAULT 0,
+            paid_cash FLOAT NOT NULL DEFAULT 0,
+            paid_debt FLOAT NOT NULL DEFAULT 0,
+            paid_total FLOAT NOT NULL DEFAULT 0,
+            new_debt_added FLOAT NOT NULL DEFAULT 0,
+            old_debt FLOAT NOT NULL DEFAULT 0,
+            debt_after FLOAT NOT NULL DEFAULT 0,
+            note VARCHAR
+        )
+    """
+    create_sale_items = """
+        CREATE TABLE IF NOT EXISTS counterparty_sale_items (
+            id SERIAL PRIMARY KEY,
+            sale_id INTEGER REFERENCES counterparty_sales(id) ON DELETE CASCADE,
+            product_id INTEGER REFERENCES products(id),
+            quantity FLOAT NOT NULL,
+            price_at_time FLOAT NOT NULL,
+            line_total FLOAT NOT NULL
+        )
+    """
+    create_debt_payments = """
+        CREATE TABLE IF NOT EXISTS counterparty_debt_payments (
+            id SERIAL PRIMARY KEY,
+            counterparty_id INTEGER REFERENCES counterparties(id),
+            amount FLOAT NOT NULL,
+            pay_method VARCHAR NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            created_by_admin_id INTEGER REFERENCES users(id),
+            debt_before FLOAT NOT NULL,
+            debt_after FLOAT NOT NULL,
+            comment VARCHAR
+        )
+    """
+
+    with engine.begin() as connection:
+        connection.execute(text(create_sales))
+        connection.execute(text(create_sale_items))
+        connection.execute(text(create_debt_payments))
+
+
+ensure_counterparty_columns()
+ensure_counterparty_trade_tables()
 
 app = FastAPI(title="Confectionery Management System")
 
@@ -3491,6 +3610,44 @@ def _serialize_sales_order(order: models.SalesOrder) -> schemas.SalesOrderOut:
     )
 
 
+def _serialize_counterparty_sale(sale: models.CounterpartySale) -> schemas.CounterpartySaleOut:
+    items = [
+        schemas.CounterpartySaleItemOut(
+            product_id=item.product_id,
+            product_name=item.product.name if item.product else "",
+            quantity=float(item.quantity),
+            price_at_time=float(item.price_at_time),
+            line_total=float(item.line_total),
+        )
+        for item in sale.items
+    ]
+
+    counterparty = sale.counterparty
+    counterparty_data = schemas.CounterpartyShortOut(
+        id=counterparty.id,
+        name=counterparty.name,
+        company=counterparty.company,
+        phone=counterparty.phone,
+        address=counterparty.address,
+    )
+
+    return schemas.CounterpartySaleOut(
+        id=sale.id,
+        counterparty=counterparty_data,
+        created_at=sale.created_at,
+        total_amount=float(sale.total_amount),
+        paid_kaspi=float(sale.paid_kaspi),
+        paid_cash=float(sale.paid_cash),
+        paid_debt=float(sale.paid_debt),
+        paid_total=float(sale.paid_total),
+        new_debt_added=float(sale.new_debt_added),
+        old_debt=float(sale.old_debt),
+        debt_after=float(sale.debt_after),
+        note=sale.note,
+        items=items,
+    )
+
+
 @app.get("/admin/counterparties", response_model=List[schemas.CounterpartyOut])
 def list_counterparties(
     search: Optional[str] = Query(None),
@@ -3524,10 +3681,10 @@ def create_counterparty(
 
     counterparty = models.Counterparty(
         name=payload.name,
-        company_name=payload.company_name,
+        company_name=payload.company,
         phone=payload.phone,
-        iin_bin=payload.iin_bin,
         address=payload.address,
+        debt=float(payload.debt or 0),
         created_by_admin_id=current_user.id,
     )
     db.add(counterparty)
@@ -3550,6 +3707,8 @@ def update_counterparty(
         raise HTTPException(status_code=404, detail="Контрагент не найден")
 
     update_data = payload.dict(exclude_unset=True)
+    if "company" in update_data:
+        update_data["company_name"] = update_data.pop("company")
     for key, value in update_data.items():
         setattr(counterparty, key, value)
 
@@ -3573,6 +3732,308 @@ def archive_counterparty(
     counterparty.is_archived = True
     db.commit()
     return {"status": "archived"}
+
+
+@app.post("/admin/counterparties/{counterparty_id}/pay-debt")
+def pay_counterparty_debt(
+    counterparty_id: int,
+    payload: schemas.CounterpartyDebtPaymentCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    counterparty = (
+        db.query(models.Counterparty)
+        .filter(models.Counterparty.id == counterparty_id, models.Counterparty.is_archived.is_(False))
+        .first()
+    )
+    if not counterparty:
+        raise HTTPException(status_code=404, detail="Контрагент не найден")
+
+    amount = Decimal(str(payload.amount))
+    debt_before = Decimal(str(counterparty.debt or 0))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Сумма должна быть больше 0")
+    if amount > debt_before:
+        raise HTTPException(status_code=400, detail="Сумма превышает текущий долг")
+
+    debt_after = debt_before - amount
+    counterparty.debt = float(debt_after)
+
+    payment = models.CounterpartyDebtPayment(
+        counterparty_id=counterparty.id,
+        amount=float(amount),
+        pay_method=payload.method,
+        created_by_admin_id=current_user.id,
+        debt_before=float(debt_before),
+        debt_after=float(debt_after),
+        comment=payload.comment,
+    )
+
+    db.add(payment)
+    db.commit()
+    db.refresh(counterparty)
+    return {"status": "ok", "debt_after": counterparty.debt}
+
+
+@app.get("/admin/counterparty-sales", response_model=List[schemas.CounterpartySaleListItem])
+def list_counterparty_sales(
+    counterparty_id: Optional[int] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    query = db.query(models.CounterpartySale).options(joinedload(models.CounterpartySale.counterparty))
+
+    if counterparty_id:
+        query = query.filter(models.CounterpartySale.counterparty_id == counterparty_id)
+    if date_from:
+        start_dt = datetime.combine(date_from, time_type.min, tzinfo=timezone.utc)
+        query = query.filter(models.CounterpartySale.created_at >= start_dt)
+    if date_to:
+        end_dt = datetime.combine(date_to, time_type.max, tzinfo=timezone.utc)
+        query = query.filter(models.CounterpartySale.created_at <= end_dt)
+
+    sales = query.order_by(models.CounterpartySale.created_at.desc()).all()
+    results: list[schemas.CounterpartySaleListItem] = []
+    for sale in sales:
+        counterparty = sale.counterparty
+        counterparty_data = schemas.CounterpartyShortOut(
+            id=counterparty.id,
+            name=counterparty.name,
+            company=counterparty.company,
+            phone=counterparty.phone,
+            address=counterparty.address,
+        )
+        results.append(
+            schemas.CounterpartySaleListItem(
+                id=sale.id,
+                counterparty=counterparty_data,
+                created_at=sale.created_at,
+                total_amount=float(sale.total_amount),
+                paid_total=float(sale.paid_total),
+                new_debt_added=float(sale.new_debt_added),
+                debt_after=float(sale.debt_after),
+            )
+        )
+    return results
+
+
+@app.get("/admin/counterparty-sales/{sale_id}", response_model=schemas.CounterpartySaleOut)
+def get_counterparty_sale(
+    sale_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    sale = (
+        db.query(models.CounterpartySale)
+        .options(joinedload(models.CounterpartySale.items).joinedload(models.CounterpartySaleItem.product))
+        .options(joinedload(models.CounterpartySale.counterparty))
+        .filter(models.CounterpartySale.id == sale_id)
+        .first()
+    )
+    if not sale:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+    return _serialize_counterparty_sale(sale)
+
+
+@app.post("/admin/counterparty-sales", response_model=schemas.CounterpartySaleOut)
+def create_counterparty_sale(
+    payload: schemas.CounterpartySaleCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Добавьте товары")
+
+    counterparty = (
+        db.query(models.Counterparty)
+        .filter(models.Counterparty.id == payload.counterparty_id, models.Counterparty.is_archived.is_(False))
+        .first()
+    )
+    if not counterparty:
+        raise HTTPException(status_code=404, detail="Контрагент не найден")
+
+    product_ids = [item.product_id for item in payload.items]
+    products = (
+        db.query(models.Product)
+        .filter(models.Product.id.in_(product_ids))
+        .with_for_update()
+        .all()
+    )
+    product_map = {product.id: product for product in products}
+    missing_ids = [str(pid) for pid in product_ids if pid not in product_map]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Товары не найдены: {', '.join(missing_ids)}")
+
+    total_amount = Decimal("0")
+    sale_items: list[models.CounterpartySaleItem] = []
+
+    for item in payload.items:
+        product = product_map[item.product_id]
+        quantity = Decimal(str(item.quantity))
+        price = Decimal(str(item.price))
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть больше 0")
+        if product.manager_id is not None or product.is_return:
+            raise HTTPException(status_code=400, detail=f"Товар недоступен на складе: {product.name}")
+        if product.quantity is None or Decimal(str(product.quantity)) < quantity:
+            raise HTTPException(status_code=400, detail=f"Не хватает товара на складе: {product.name}")
+
+        line_total = quantity * price
+        total_amount += line_total
+        sale_items.append(
+            models.CounterpartySaleItem(
+                product_id=product.id,
+                quantity=float(quantity),
+                price_at_time=float(price),
+                line_total=float(line_total),
+            )
+        )
+
+    paid_kaspi = Decimal(str(payload.payment.kaspi))
+    paid_cash = Decimal(str(payload.payment.cash))
+    paid_debt = Decimal(str(payload.payment.debt))
+    paid_sum = paid_kaspi + paid_cash + paid_debt
+    if abs(paid_sum - total_amount) > Decimal("0.01"):
+        raise HTTPException(status_code=400, detail="Сумма оплаты должна равняться сумме продажи")
+
+    for item in payload.items:
+        product = product_map[item.product_id]
+        product.quantity = int(Decimal(str(product.quantity)) - Decimal(str(item.quantity)))
+
+    old_debt = Decimal(str(counterparty.debt or 0))
+    new_debt_added = paid_debt
+    debt_after = old_debt + new_debt_added
+    counterparty.debt = float(debt_after)
+
+    sale = models.CounterpartySale(
+        counterparty_id=counterparty.id,
+        created_by_admin_id=current_user.id,
+        total_amount=float(total_amount),
+        paid_kaspi=float(paid_kaspi),
+        paid_cash=float(paid_cash),
+        paid_debt=float(paid_debt),
+        paid_total=float(paid_kaspi + paid_cash),
+        new_debt_added=float(new_debt_added),
+        old_debt=float(old_debt),
+        debt_after=float(debt_after),
+        note=payload.note,
+        items=sale_items,
+    )
+
+    db.add(sale)
+    db.commit()
+    db.refresh(sale)
+    return _serialize_counterparty_sale(sale)
+
+
+@app.get("/admin/counterparty-sales/{sale_id}/print")
+def print_counterparty_sale(
+    sale_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    sale = (
+        db.query(models.CounterpartySale)
+        .options(joinedload(models.CounterpartySale.items).joinedload(models.CounterpartySaleItem.product))
+        .options(joinedload(models.CounterpartySale.counterparty))
+        .filter(models.CounterpartySale.id == sale_id)
+        .first()
+    )
+    if not sale:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+
+    counterparty = sale.counterparty
+    rows_html = ""
+    for index, item in enumerate(sale.items, start=1):
+        rows_html += f"""
+        <tr>
+          <td>{index}</td>
+          <td>{item.product.name if item.product else ""}</td>
+          <td>{item.quantity}</td>
+          <td>{item.price_at_time:.2f}</td>
+          <td>{item.line_total:.2f}</td>
+        </tr>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Продажа #{sale.id}</title>
+        <style>
+          body {{ font-family: Arial, sans-serif; padding: 24px; color: #111; }}
+          h1, h2 {{ margin: 0 0 8px; }}
+          .section {{ margin-bottom: 16px; display: flex; justify-content: space-between; }}
+          .counterparty {{ text-align: right; }}
+          table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+          th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+          th {{ background: #f4f4f4; }}
+          .totals {{ margin-top: 12px; }}
+          .totals div {{ margin-bottom: 4px; }}
+          @media print {{
+            button {{ display: none; }}
+          }}
+        </style>
+      </head>
+      <body>
+        <h1>Накладная №{sale.id}</h1>
+        <div class="section">
+          <div>
+            <strong>Название фирмы изготовления:</strong>
+            <div>______________________________</div>
+          </div>
+          <div class="counterparty">
+            <div>{counterparty.name}</div>
+            <div>{counterparty.company or ""}</div>
+            <div>{counterparty.address or ""}</div>
+            <div>{counterparty.phone or ""}</div>
+            <div>Долг после продажи: {sale.debt_after:.2f}</div>
+          </div>
+        </div>
+        <div class="section">
+          <div><strong>Дата:</strong> {sale.created_at}</div>
+          <div><strong>Номер:</strong> {sale.id}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>Наименование</th>
+              <th>Кол-во</th>
+              <th>Цена</th>
+              <th>Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows_html}
+          </tbody>
+        </table>
+        <div class="totals">
+          <div><strong>Сумма:</strong> {sale.total_amount:.2f}</div>
+          <div><strong>Kaspi:</strong> {sale.paid_kaspi:.2f}</div>
+          <div><strong>Наличные:</strong> {sale.paid_cash:.2f}</div>
+          <div><strong>В долг:</strong> {sale.paid_debt:.2f}</div>
+        </div>
+        <script>
+          window.onload = () => window.print();
+        </script>
+      </body>
+    </html>
+    """
+    return Response(content=html, media_type="text/html")
 
 
 @app.get("/admin/sales-orders", response_model=List[schemas.SalesOrderListItem])

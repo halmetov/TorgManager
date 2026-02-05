@@ -34,7 +34,7 @@ const items = [
   { title: "Магазины", url: "/admin/shops", icon: Store },
   { title: "Водители", url: "/admin/managers", icon: Users },
   { title: "Контрагенты", url: "/admin/counterparties", icon: Handshake },
-  { title: "Продажи", url: "/admin/sales", icon: Receipt },
+  { title: "Продажа", url: "/admin/sales", icon: Receipt },
   { title: "Отчёт по контрагентам", url: "/admin/counterparty-reports", icon: FileSpreadsheet },
   { title: "Поступление", url: "/admin/incoming", icon: ArrowDownToLine },
   { title: "Отправка", url: "/admin/dispatch", icon: Truck },

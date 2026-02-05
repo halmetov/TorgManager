@@ -11,41 +11,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { ChevronDown, Loader2, Plus, Printer, Trash2 } from "lucide-react";
+import { Check, Loader2, Plus, Printer, Trash2 } from "lucide-react";
 
 interface CounterpartyOption {
   id: number;
   name: string;
-  company_name?: string | null;
-}
-
-interface SalesOrderListItem {
-  id: number;
-  counterparty_id: number;
-  counterparty_name: string;
-  created_at: string;
-  status: "draft" | "closed";
-  total_amount: number;
-}
-
-interface SalesOrderDetail {
-  id: number;
-  counterparty: CounterpartyOption;
-  status: "draft" | "closed";
-  created_at: string;
-  closed_at?: string | null;
-  total_amount: number;
-  paid_amount: number;
-  debt_amount: number;
-  items: SalesOrderItem[];
-}
-
-interface SalesOrderItem {
-  product_id: number;
-  product_name: string;
-  quantity: number;
-  price_at_time: number;
-  line_total: number;
+  company?: string | null;
+  debt?: number;
 }
 
 interface ProductOption {
@@ -55,18 +27,47 @@ interface ProductOption {
   price: number;
 }
 
-interface SalesItemForm {
-  product_id: number;
-  product_name: string;
-  available: number;
-  quantity: string;
-  price: string;
+interface SalesHistoryItem {
+  id: number;
+  counterparty: CounterpartyOption;
+  created_at: string;
+  total_amount: number;
+  paid_total: number;
+  new_debt_added: number;
+  debt_after: number;
 }
 
-const statusLabels: Record<string, string> = {
-  draft: "Черновик",
-  closed: "Закрыт",
-};
+interface SaleDetailItem {
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  price_at_time: number;
+  line_total: number;
+}
+
+interface SaleDetail {
+  id: number;
+  counterparty: CounterpartyOption;
+  created_at: string;
+  total_amount: number;
+  paid_kaspi: number;
+  paid_cash: number;
+  paid_debt: number;
+  paid_total: number;
+  new_debt_added: number;
+  old_debt: number;
+  debt_after: number;
+  items: SaleDetailItem[];
+}
+
+interface SalesItemForm {
+  id: string;
+  product_id?: number;
+  product_name?: string;
+  quantity: string;
+  price: string;
+  confirmed: boolean;
+}
 
 const formatDateTime = (value: string) =>
   new Date(value).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" });
@@ -77,32 +78,24 @@ export default function AdminSales() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [counterpartyFilter, setCounterpartyFilter] = useState<string>("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [activeOrder, setActiveOrder] = useState<SalesOrderDetail | null>(null);
   const [counterpartyId, setCounterpartyId] = useState<string>("");
   const [items, setItems] = useState<SalesItemForm[]>([]);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentForm, setPaymentForm] = useState({ kaspi: "", cash: "", debt: "" });
 
-  const [productOpen, setProductOpen] = useState(false);
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [productOptions, setProductOptions] = useState<ProductOption[]>([]);
   const [productLoading, setProductLoading] = useState(false);
-
-  const [paymentOpen, setPaymentOpen] = useState(false);
-  const [paidAmount, setPaidAmount] = useState("");
+  const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchControllerRef = useRef<AbortController | null>(null);
 
-  const {
-    data: counterparties = [],
-    error: counterpartiesError,
-  } = useQuery({
+  const { data: counterparties = [], error: counterpartiesError } = useQuery({
     queryKey: ["counterparties"],
     queryFn: () => api.getAdminCounterparties(),
   });
@@ -116,109 +109,64 @@ export default function AdminSales() {
   }, [counterpartiesError, toast]);
 
   const {
-    data: salesOrders = [],
+    data: salesHistory = [],
     isLoading,
-    error,
+    error: salesError,
   } = useQuery({
-    queryKey: ["sales-orders", { statusFilter, counterpartyFilter, dateFrom, dateTo }],
-    queryFn: () =>
-      api.getAdminSalesOrders({
-        status: statusFilter === "all" ? undefined : statusFilter,
-        counterparty_id: counterpartyFilter === "all" ? undefined : Number(counterpartyFilter),
-        date_from: dateFrom || undefined,
-        date_to: dateTo || undefined,
-      }),
+    queryKey: ["counterparty-sales"],
+    queryFn: () => api.getAdminCounterpartySales(),
   });
 
   useEffect(() => {
-    if (error) {
-      const message = error instanceof Error ? error.message : "Не удалось загрузить продажи";
+    if (salesError) {
+      const message = salesError instanceof Error ? salesError.message : "Не удалось загрузить историю продаж";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     }
-  }, [error, toast]);
+  }, [salesError, toast]);
 
-  const {
-    data: orderDetail,
-    isFetching: detailLoading,
-  } = useQuery({
-    queryKey: ["sales-order", detailId],
-    queryFn: () => api.getAdminSalesOrder(detailId!),
+  const { data: saleDetail, isFetching: detailLoading } = useQuery({
+    queryKey: ["counterparty-sale", detailId],
+    queryFn: () => api.getAdminCounterpartySale(detailId!),
     enabled: detailId !== null,
   });
 
   useEffect(() => {
-    if (!orderDetail) return;
-    const detail = orderDetail as SalesOrderDetail;
-    setActiveOrder(detail);
-    setCounterpartyId(String(detail.counterparty.id));
-    setItems(
-      detail.items.map((item) => ({
-        product_id: item.product_id,
-        product_name: item.product_name,
-        available: 0,
-        quantity: String(item.quantity),
-        price: String(item.price_at_time),
-      }))
-    );
-    setIsDialogOpen(true);
-  }, [orderDetail]);
+    if (saleDetail) {
+      setDetailOpen(true);
+    }
+  }, [saleDetail]);
 
-  const resetForm = () => {
-    setActiveOrder(null);
-    setCounterpartyId("");
-    setItems([]);
-    setProductSearch("");
-    setProductOptions([]);
-    setPaidAmount("");
-  };
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+      if (searchControllerRef.current) {
+        searchControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const createMutation = useMutation({
-    mutationFn: (payload: { counterparty_id: number; items: { product_id: number; quantity: number; price: number }[] }) =>
-      api.createAdminSalesOrder(payload),
+    mutationFn: (payload: {
+      counterparty_id: number;
+      items: { product_id: number; quantity: number; price: number }[];
+      payment: { kaspi: number; cash: number; debt: number };
+    }) => api.createAdminCounterpartySale(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sales-orders"] });
-      toast({ title: "Продажа создана" });
-      setIsDialogOpen(false);
-      resetForm();
+      queryClient.invalidateQueries({ queryKey: ["counterparty-sales"] });
+      queryClient.invalidateQueries({ queryKey: ["counterparties"] });
+      toast({ title: "Продажа оформлена" });
+      setItems([]);
+      setCounterpartyId("");
+      setPaymentOpen(false);
+      setPaymentForm({ kaspi: "", cash: "", debt: "" });
     },
     onError: (mutationError: any) => {
       const message = mutationError?.message ?? "Не удалось создать продажу";
       toast({ title: "Ошибка", description: message, variant: "destructive" });
     },
   });
-
-  const updateMutation = useMutation({
-    mutationFn: (payload: { id: number; data: { counterparty_id: number; items: any[] } }) =>
-      api.updateAdminSalesOrder(payload.id, payload.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sales-orders"] });
-      toast({ title: "Продажа обновлена" });
-      setIsDialogOpen(false);
-      resetForm();
-    },
-    onError: (mutationError: any) => {
-      const message = mutationError?.message ?? "Не удалось обновить продажу";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    },
-  });
-
-  const closeMutation = useMutation({
-    mutationFn: (payload: { id: number; paid_amount: number }) =>
-      api.closeAdminSalesOrder(payload.id, { paid_amount: payload.paid_amount }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["sales-orders"] });
-      toast({ title: "Продажа закрыта" });
-      setPaymentOpen(false);
-      setIsDialogOpen(false);
-      resetForm();
-    },
-    onError: (mutationError: any) => {
-      const message = mutationError?.message ?? "Не удалось закрыть продажу";
-      toast({ title: "Ошибка", description: message, variant: "destructive" });
-    },
-  });
-
-  const isReadOnly = activeOrder?.status === "closed";
 
   const totalAmount = useMemo(() => {
     return items.reduce((sum, item) => {
@@ -229,11 +177,10 @@ export default function AdminSales() {
     }, 0);
   }, [items]);
 
-  const debtAmount = useMemo(() => {
-    const paid = Number(paidAmount);
-    if (Number.isNaN(paid)) return totalAmount;
-    return Math.max(totalAmount - paid, 0);
-  }, [paidAmount, totalAmount]);
+  const selectedCounterparty = useMemo(() => {
+    const list = Array.isArray(counterparties) ? (counterparties as CounterpartyOption[]) : [];
+    return list.find((counterparty) => String(counterparty.id) === counterpartyId) ?? null;
+  }, [counterparties, counterpartyId]);
 
   const cancelScheduledSearch = (abortOngoing = false) => {
     if (searchTimeoutRef.current) {
@@ -245,10 +192,6 @@ export default function AdminSales() {
       searchControllerRef.current = null;
     }
   };
-
-  useEffect(() => {
-    return () => cancelScheduledSearch(true);
-  }, []);
 
   const runSearch = async (query?: string) => {
     if (searchControllerRef.current) {
@@ -305,184 +248,319 @@ export default function AdminSales() {
     scheduleSearch(value);
   };
 
-  const handleSelectProduct = (option: ProductOption) => {
+  const handleSelectProduct = (index: number, option: ProductOption) => {
     cancelScheduledSearch(true);
     setProductSearch(option.name);
     setProductOptions([]);
     setProductLoading(false);
-    setProductOpen(false);
+    setProductPickerOpen(false);
+    setActiveRowIndex(null);
 
     setItems((prev) => {
-      const existing = prev.find((item) => item.product_id === option.id);
-      if (existing) {
-        return prev.map((item) =>
-          item.product_id === option.id
-            ? {
-                ...item,
-                quantity: String(Number(item.quantity || 0) + 1),
-              }
-            : item
-        );
+      const existingIndex = prev.findIndex((item, idx) => item.product_id === option.id && idx !== index);
+      if (existingIndex !== -1) {
+        const updated = [...prev];
+        const existing = updated[existingIndex];
+        updated[existingIndex] = {
+          ...existing,
+          quantity: String(Number(existing.quantity || 0) + 1),
+        };
+        updated.splice(index, 1);
+        return updated;
       }
-      return [
-        ...prev,
-        {
-          product_id: option.id,
-          product_name: option.name,
-          available: option.quantity,
-          quantity: "1",
-          price: String(option.price ?? 0),
-        },
-      ];
+      return prev.map((item, idx) =>
+        idx === index
+          ? {
+              ...item,
+              product_id: option.id,
+              product_name: option.name,
+              quantity: item.quantity || "1",
+              price: item.price || String(option.price ?? 0),
+            }
+          : item
+      );
     });
   };
 
+  const handleAddItem = () => {
+    setItems((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        quantity: "1",
+        price: "0",
+        confirmed: false,
+      },
+    ]);
+  };
+
   const handleItemChange = (index: number, field: "quantity" | "price", value: string) => {
-    setItems((prev) =>
-      prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item))
-    );
+    setItems((prev) => prev.map((item, idx) => (idx === index ? { ...item, [field]: value } : item)));
   };
 
   const handleRemoveItem = (index: number) => {
     setItems((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleCreate = () => {
-    resetForm();
-    setIsDialogOpen(true);
+  const toggleConfirm = (index: number) => {
+    setItems((prev) => prev.map((item, idx) => (idx === index ? { ...item, confirmed: !item.confirmed } : item)));
   };
 
-  const handleOpenOrder = (orderId: number) => {
-    setDetailId(orderId);
-  };
-
-  const handleSave = () => {
-    const payloadItems = items.map((item) => ({
-      product_id: item.product_id,
-      quantity: Number(item.quantity),
-      price: Number(item.price),
-    }));
-
+  const openPayment = () => {
     if (!counterpartyId) {
       toast({ title: "Ошибка", description: "Выберите контрагента", variant: "destructive" });
       return;
     }
-
-    if (payloadItems.length === 0) {
+    if (items.length === 0) {
       toast({ title: "Ошибка", description: "Добавьте товары", variant: "destructive" });
       return;
     }
-
-    if (activeOrder) {
-      updateMutation.mutate({
-        id: activeOrder.id,
-        data: { counterparty_id: Number(counterpartyId), items: payloadItems },
-      });
-    } else {
-      createMutation.mutate({ counterparty_id: Number(counterpartyId), items: payloadItems });
+    const invalidItem = items.find(
+      (item) =>
+        !item.product_id ||
+        Number.isNaN(Number(item.quantity)) ||
+        Number(item.quantity) <= 0 ||
+        Number.isNaN(Number(item.price)) ||
+        Number(item.price) < 0
+    );
+    if (invalidItem) {
+      toast({ title: "Ошибка", description: "Проверьте товары и цены", variant: "destructive" });
+      return;
     }
-  };
-
-  const handleOpenPayment = () => {
-    setPaidAmount(String(totalAmount));
+    setPaymentForm({ kaspi: totalAmount.toFixed(2), cash: "0", debt: "0" });
     setPaymentOpen(true);
   };
 
-  const handleCloseOrder = () => {
-    if (!activeOrder) return;
-    const paid = Number(paidAmount);
-    if (Number.isNaN(paid) || paid < 0) {
-      toast({ title: "Ошибка", description: "Введите корректную сумму оплаты", variant: "destructive" });
+  const handleSubmitSale = () => {
+    const kaspi = Number(paymentForm.kaspi);
+    const cash = Number(paymentForm.cash);
+    const debt = Number(paymentForm.debt);
+
+    if ([kaspi, cash, debt].some((value) => Number.isNaN(value) || value < 0)) {
+      toast({ title: "Ошибка", description: "Введите корректные суммы", variant: "destructive" });
       return;
     }
-    closeMutation.mutate({ id: activeOrder.id, paid_amount: paid });
+
+    const paymentSum = kaspi + cash + debt;
+    if (Math.abs(paymentSum - totalAmount) > 0.01) {
+      toast({
+        title: "Ошибка",
+        description: "Сумма оплаты должна равняться сумме продажи",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const payloadItems = items
+      .filter((item) => item.product_id)
+      .map((item) => ({
+        product_id: item.product_id!,
+        quantity: Number(item.quantity),
+        price: Number(item.price),
+      }));
+
+    createMutation.mutate({
+      counterparty_id: Number(counterpartyId),
+      items: payloadItems,
+      payment: { kaspi, cash, debt },
+    });
   };
 
-  const handlePrint = (orderId: number) => {
-    const url = `${apiBaseUrl}/admin/sales-orders/${orderId}/print`;
+  const handlePrint = (saleId: number) => {
+    const url = `${apiBaseUrl}/admin/counterparty-sales/${saleId}/print`;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  const handleDialogOpenChange = (open: boolean) => {
-    setIsDialogOpen(open);
+  const handleOpenDetail = (saleId: number) => {
+    setDetailId(saleId);
+  };
+
+  const handleDetailOpenChange = (open: boolean) => {
+    setDetailOpen(open);
     if (!open) {
       setDetailId(null);
-      resetForm();
     }
   };
 
-  const salesOrdersList = Array.isArray(salesOrders) ? (salesOrders as SalesOrderListItem[]) : [];
   const counterpartiesList = Array.isArray(counterparties) ? (counterparties as CounterpartyOption[]) : [];
+  const historyList = Array.isArray(salesHistory) ? (salesHistory as SalesHistoryItem[]) : [];
+  const detail = saleDetail as SaleDetail | undefined;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <h1 className="text-3xl font-bold">Продажи</h1>
-        <Button onClick={handleCreate}>
-          <Plus className="mr-2 h-4 w-4" />
-          Создать продажу
-        </Button>
-      </div>
+      <h1 className="text-3xl font-bold">Продажа</h1>
 
       <Card>
         <CardHeader>
-          <CardTitle>Фильтры</CardTitle>
+          <CardTitle>Оптовая продажа контрагенту</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-4">
-          <div>
-            <Label>Статус</Label>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Все статусы" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                <SelectItem value="draft">Черновики</SelectItem>
-                <SelectItem value="closed">Закрытые</SelectItem>
-              </SelectContent>
-            </Select>
+        <CardContent className="space-y-6">
+          <div className="grid gap-4 md:grid-cols-[2fr_1fr]">
+            <div>
+              <Label>Контрагент</Label>
+              <Select value={counterpartyId} onValueChange={setCounterpartyId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите контрагента" />
+                </SelectTrigger>
+                <SelectContent>
+                  {counterpartiesList.map((counterparty) => (
+                    <SelectItem key={counterparty.id} value={String(counterparty.id)}>
+                      {counterparty.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="rounded-md border p-3 text-sm">
+              Текущий долг: <span className="font-semibold">{(selectedCounterparty?.debt ?? 0).toFixed(2)} ₸</span>
+            </div>
           </div>
-          <div>
-            <Label>Контрагент</Label>
-            <Select value={counterpartyFilter} onValueChange={setCounterpartyFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Все контрагенты" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                {counterpartiesList.map((counterparty) => (
-                  <SelectItem key={counterparty.id} value={String(counterparty.id)}>
-                    {counterparty.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label>Товары</Label>
+            <Button variant="outline" onClick={handleAddItem}>
+              <Plus className="mr-2 h-4 w-4" />
+              Добавить товар
+            </Button>
           </div>
-          <div>
-            <Label>Дата с</Label>
-            <Input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
+
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Товар</TableHead>
+                  <TableHead>Кол-во</TableHead>
+                  <TableHead>Цена</TableHead>
+                  <TableHead>Сумма</TableHead>
+                  <TableHead className="text-right">Действия</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center">
+                      Добавьте товары
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  items.map((item, index) => {
+                    const quantity = Number(item.quantity);
+                    const price = Number(item.price);
+                    const lineTotal =
+                      Number.isNaN(quantity) || Number.isNaN(price) ? 0 : Math.max(quantity, 0) * Math.max(price, 0);
+
+                    return (
+                      <TableRow key={item.id}>
+                        <TableCell className="min-w-[220px]">
+                          <Popover
+                            open={productPickerOpen && activeRowIndex === index}
+                            onOpenChange={(open) => {
+                              setProductPickerOpen(open);
+                              setActiveRowIndex(open ? index : null);
+                              if (open) {
+                                setProductSearch("");
+                                scheduleSearch("");
+                              }
+                            }}
+                          >
+                            <PopoverTrigger asChild>
+                              <Button variant="outline" className="w-full justify-between" disabled={item.confirmed}>
+                                {item.product_name || "Выберите товар"}
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="p-0" align="start">
+                              <Command>
+                                <CommandInput
+                                  placeholder="Поиск товара..."
+                                  value={productSearch}
+                                  onValueChange={handleSearchChange}
+                                />
+                                <CommandList>
+                                  {productLoading && (
+                                    <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Загрузка...
+                                    </div>
+                                  )}
+                                  <CommandEmpty>Ничего не найдено</CommandEmpty>
+                                  <CommandGroup>
+                                    {productOptions.map((option) => (
+                                      <CommandItem
+                                        key={option.id}
+                                        onSelect={() => handleSelectProduct(index, option)}
+                                        className="flex items-center justify-between"
+                                      >
+                                        <span>{option.name}</span>
+                                        <span className="text-xs text-muted-foreground">Доступно: {option.quantity}</span>
+                                      </CommandItem>
+                                    ))}
+                                  </CommandGroup>
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={item.quantity}
+                            onChange={(event) => handleItemChange(index, "quantity", event.target.value)}
+                            disabled={item.confirmed}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={item.price}
+                            onChange={(event) => handleItemChange(index, "price", event.target.value)}
+                            disabled={item.confirmed}
+                          />
+                        </TableCell>
+                        <TableCell>{lineTotal.toFixed(2)}</TableCell>
+                        <TableCell className="text-right space-x-2">
+                          <Button variant="ghost" size="icon" onClick={() => toggleConfirm(index)}>
+                            <Check className={item.confirmed ? "h-4 w-4 text-emerald-600" : "h-4 w-4"} />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handleRemoveItem(index)}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
           </div>
-          <div>
-            <Label>Дата по</Label>
-            <Input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
+
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="text-sm text-muted-foreground">
+              Итого: <span className="font-semibold text-foreground">{totalAmount.toFixed(2)} ₸</span>
+            </div>
+            <Button onClick={openPayment} disabled={createMutation.isPending}>
+              Отправить / Сохранить
+            </Button>
           </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Список продаж</CardTitle>
+          <CardTitle>История продаж</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>№</TableHead>
                   <TableHead>Контрагент</TableHead>
                   <TableHead>Дата</TableHead>
                   <TableHead>Сумма</TableHead>
-                  <TableHead>Статус</TableHead>
+                  <TableHead>Оплачено</TableHead>
+                  <TableHead>Долг после</TableHead>
                   <TableHead className="text-right">Действия</TableHead>
                 </TableRow>
               </TableHeader>
@@ -493,23 +571,29 @@ export default function AdminSales() {
                       Загрузка...
                     </TableCell>
                   </TableRow>
-                ) : salesOrdersList.length === 0 ? (
+                ) : historyList.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center">
                       Продажи не найдены
                     </TableCell>
                   </TableRow>
                 ) : (
-                  salesOrdersList.map((order) => (
-                    <TableRow key={order.id}>
-                      <TableCell>{order.id}</TableCell>
-                      <TableCell>{order.counterparty_name}</TableCell>
-                      <TableCell>{formatDateTime(order.created_at)}</TableCell>
-                      <TableCell>{order.total_amount.toFixed(2)}</TableCell>
-                      <TableCell>{statusLabels[order.status]}</TableCell>
-                      <TableCell className="text-right">
-                        <Button variant="ghost" onClick={() => handleOpenOrder(order.id)}>
-                          Открыть
+                  historyList.map((sale) => (
+                    <TableRow key={sale.id}>
+                      <TableCell>
+                        <div className="font-medium">{sale.counterparty.name}</div>
+                        <div className="text-xs text-muted-foreground">{sale.counterparty.company || "—"}</div>
+                      </TableCell>
+                      <TableCell>{formatDateTime(sale.created_at)}</TableCell>
+                      <TableCell>{sale.total_amount.toFixed(2)}</TableCell>
+                      <TableCell>{sale.paid_total.toFixed(2)}</TableCell>
+                      <TableCell>{sale.debt_after.toFixed(2)}</TableCell>
+                      <TableCell className="text-right space-x-2">
+                        <Button variant="ghost" onClick={() => handleOpenDetail(sale.id)}>
+                          Подробнее
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => handlePrint(sale.id)}>
+                          <Printer className="h-4 w-4" />
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -521,218 +605,118 @@ export default function AdminSales() {
         </CardContent>
       </Card>
 
-      <Dialog open={isDialogOpen} onOpenChange={handleDialogOpenChange}>
-        <DialogContent className="max-w-4xl">
+      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>{activeOrder ? `Продажа №${activeOrder.id}` : "Новая продажа"}</DialogTitle>
+            <DialogTitle>Оплата продажи</DialogTitle>
           </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Сумма продажи</Label>
+              <div className="h-10 flex items-center rounded-md border px-3 text-sm">
+                {totalAmount.toFixed(2)} ₸
+              </div>
+            </div>
+            <div>
+              <Label htmlFor="payment-kaspi">Kaspi</Label>
+              <Input
+                id="payment-kaspi"
+                type="number"
+                min="0"
+                step="0.01"
+                value={paymentForm.kaspi}
+                onChange={(event) => setPaymentForm({ ...paymentForm, kaspi: event.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="payment-cash">Наличные</Label>
+              <Input
+                id="payment-cash"
+                type="number"
+                min="0"
+                step="0.01"
+                value={paymentForm.cash}
+                onChange={(event) => setPaymentForm({ ...paymentForm, cash: event.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="payment-debt">В долг</Label>
+              <Input
+                id="payment-debt"
+                type="number"
+                min="0"
+                step="0.01"
+                value={paymentForm.debt}
+                onChange={(event) => setPaymentForm({ ...paymentForm, debt: event.target.value })}
+              />
+            </div>
+            <Button onClick={handleSubmitSale} disabled={createMutation.isPending}>
+              Провести продажу
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
+      <Dialog open={detailOpen} onOpenChange={handleDetailOpenChange}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Детали продажи</DialogTitle>
+          </DialogHeader>
           {detailLoading ? (
             <div className="py-6 text-center text-sm text-muted-foreground">Загрузка...</div>
-          ) : (
-            <div className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
+          ) : detail ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <Label>Контрагент</Label>
-                  <Select
-                    value={counterpartyId}
-                    onValueChange={setCounterpartyId}
-                    disabled={isReadOnly}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Выберите контрагента" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {counterpartiesList.map((counterparty) => (
-                        <SelectItem key={counterparty.id} value={String(counterparty.id)}>
-                          {counterparty.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="text-sm text-muted-foreground">Контрагент</div>
+                  <div className="font-medium">{detail.counterparty.name}</div>
+                  <div className="text-xs text-muted-foreground">{detail.counterparty.company || "—"}</div>
                 </div>
-                {activeOrder && (
-                  <div>
-                    <Label>Статус</Label>
-                    <div className="h-10 flex items-center rounded-md border px-3 text-sm">
-                      {statusLabels[activeOrder.status]}
-                    </div>
-                  </div>
-                )}
+                <div className="text-sm text-muted-foreground">{formatDateTime(detail.created_at)}</div>
               </div>
-
-              <div className="space-y-2">
-                <Label>Товары</Label>
-                {!isReadOnly && (
-                  <Popover open={productOpen} onOpenChange={setProductOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" className="w-full justify-between">
-                        {productSearch || "Добавить товар"}
-                        <ChevronDown className="h-4 w-4" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="p-0" align="start">
-                      <Command>
-                        <CommandInput
-                          placeholder="Поиск товара..."
-                          value={productSearch}
-                          onValueChange={handleSearchChange}
-                        />
-                        <CommandList>
-                          {productLoading && (
-                            <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              Загрузка...
-                            </div>
-                          )}
-                          <CommandEmpty>Ничего не найдено</CommandEmpty>
-                          <CommandGroup>
-                            {productOptions.map((option) => (
-                              <CommandItem
-                                key={option.id}
-                                onSelect={() => handleSelectProduct(option)}
-                                className="flex items-center justify-between"
-                              >
-                                <span>{option.name}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  Доступно: {option.quantity}
-                                </span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
-                )}
-              </div>
-
               <div className="rounded-md border">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Название</TableHead>
-                      <TableHead>Доступно</TableHead>
+                      <TableHead>Товар</TableHead>
                       <TableHead>Кол-во</TableHead>
                       <TableHead>Цена</TableHead>
                       <TableHead>Сумма</TableHead>
-                      <TableHead className="text-right">Действия</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {items.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="text-center">
-                          Нет товаров
-                        </TableCell>
+                    {detail.items.map((item) => (
+                      <TableRow key={item.product_id}>
+                        <TableCell>{item.product_name}</TableCell>
+                        <TableCell>{item.quantity}</TableCell>
+                        <TableCell>{item.price_at_time.toFixed(2)}</TableCell>
+                        <TableCell>{item.line_total.toFixed(2)}</TableCell>
                       </TableRow>
-                    ) : (
-                      items.map((item, index) => {
-                        const quantity = Number(item.quantity);
-                        const price = Number(item.price);
-                        const lineTotal =
-                          Number.isNaN(quantity) || Number.isNaN(price) ? 0 : quantity * price;
-                        return (
-                          <TableRow key={`${item.product_id}-${index}`}>
-                            <TableCell>{item.product_name}</TableCell>
-                            <TableCell>{item.available || "—"}</TableCell>
-                            <TableCell>
-                              <Input
-                                type="number"
-                                min="0"
-                                value={item.quantity}
-                                onChange={(event) => handleItemChange(index, "quantity", event.target.value)}
-                                disabled={isReadOnly}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={item.price}
-                                onChange={(event) => handleItemChange(index, "price", event.target.value)}
-                                disabled={isReadOnly}
-                              />
-                            </TableCell>
-                            <TableCell>{lineTotal.toFixed(2)}</TableCell>
-                            <TableCell className="text-right">
-                              {!isReadOnly && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleRemoveItem(index)}
-                                >
-                                  <Trash2 className="h-4 w-4 text-destructive" />
-                                </Button>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })
-                    )}
+                    ))}
                   </TableBody>
                 </Table>
               </div>
-
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div className="text-sm text-muted-foreground">
-                  Сумма заказа: <span className="font-semibold text-foreground">{totalAmount.toFixed(2)}</span>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1 text-sm">
+                  <div>Сумма: {detail.total_amount.toFixed(2)} ₸</div>
+                  <div>Kaspi: {detail.paid_kaspi.toFixed(2)} ₸</div>
+                  <div>Наличные: {detail.paid_cash.toFixed(2)} ₸</div>
+                  <div>В долг: {detail.paid_debt.toFixed(2)} ₸</div>
                 </div>
-                <div className="flex gap-2">
-                  {activeOrder?.status === "closed" && (
-                    <Button variant="outline" onClick={() => handlePrint(activeOrder.id)}>
-                      <Printer className="mr-2 h-4 w-4" />
-                      Печать
-                    </Button>
-                  )}
-                  {!isReadOnly && (
-                    <>
-                      <Button variant="outline" onClick={handleSave} disabled={createMutation.isPending}>
-                        Сохранить
-                      </Button>
-                      {activeOrder && (
-                        <Button onClick={handleOpenPayment}>Закрыть заказ</Button>
-                      )}
-                    </>
-                  )}
+                <div className="space-y-1 text-sm">
+                  <div>Старый долг: {detail.old_debt.toFixed(2)} ₸</div>
+                  <div>Добавлено долга: {detail.new_debt_added.toFixed(2)} ₸</div>
+                  <div>Долг после: {detail.debt_after.toFixed(2)} ₸</div>
                 </div>
               </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Закрытие заказа</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label>Сумма заказа</Label>
-              <div className="h-10 flex items-center rounded-md border px-3 text-sm">
-                {totalAmount.toFixed(2)}
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => handlePrint(detail.id)}>
+                  <Printer className="mr-2 h-4 w-4" />
+                  Печать
+                </Button>
               </div>
             </div>
-            <div>
-              <Label htmlFor="paid-amount">Сколько оплатил контрагент сейчас</Label>
-              <Input
-                id="paid-amount"
-                type="number"
-                min="0"
-                step="0.01"
-                value={paidAmount}
-                onChange={(event) => setPaidAmount(event.target.value)}
-              />
-            </div>
-            <div className="text-sm text-muted-foreground">
-              В долг: <span className="font-semibold text-foreground">{debtAmount.toFixed(2)}</span>
-            </div>
-            <Button onClick={handleCloseOrder} disabled={closeMutation.isPending}>
-              Закрыть заказ
-            </Button>
-          </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>
