@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Numeric, Date, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from database import Base
 from datetime import datetime, timezone, date
 
@@ -52,11 +52,13 @@ class Counterparty(Base):
     phone = Column(String, nullable=True)
     iin_bin = Column(String, nullable=True)
     address = Column(String, nullable=True)
+    debt = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     is_archived = Column(Boolean, default=False, nullable=False)
 
     created_by_admin = relationship("User")
+    company = synonym("company_name")
 
 
 class SalesOrder(Base):
@@ -110,6 +112,63 @@ class SalesOrderPayment(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     order = relationship("SalesOrder", back_populates="payments")
+
+
+class CounterpartySale(Base):
+    __tablename__ = "counterparty_sales"
+
+    id = Column(Integer, primary_key=True, index=True)
+    counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False)
+    created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    total_amount = Column(Float, nullable=False, default=0.0)
+    paid_kaspi = Column(Float, nullable=False, default=0.0)
+    paid_cash = Column(Float, nullable=False, default=0.0)
+    paid_debt = Column(Float, nullable=False, default=0.0)
+    paid_total = Column(Float, nullable=False, default=0.0)
+    new_debt_added = Column(Float, nullable=False, default=0.0)
+    old_debt = Column(Float, nullable=False, default=0.0)
+    debt_after = Column(Float, nullable=False, default=0.0)
+    note = Column(String, nullable=True)
+
+    counterparty = relationship("Counterparty")
+    created_by_admin = relationship("User")
+    items = relationship(
+        "CounterpartySaleItem",
+        back_populates="sale",
+        cascade="all, delete-orphan",
+    )
+
+
+class CounterpartySaleItem(Base):
+    __tablename__ = "counterparty_sale_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sale_id = Column(Integer, ForeignKey("counterparty_sales.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Float, nullable=False)
+    price_at_time = Column(Float, nullable=False)
+    line_total = Column(Float, nullable=False)
+
+    sale = relationship("CounterpartySale", back_populates="items")
+    product = relationship("Product")
+
+
+class CounterpartyDebtPayment(Base):
+    __tablename__ = "counterparty_debt_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    counterparty_id = Column(Integer, ForeignKey("counterparties.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    pay_method = Column(String, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    debt_before = Column(Float, nullable=False)
+    debt_after = Column(Float, nullable=False)
+    comment = Column(String, nullable=True)
+
+    counterparty = relationship("Counterparty")
+    created_by_admin = relationship("User")
 
 
 class WarehouseSettings(Base):
