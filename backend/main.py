@@ -377,6 +377,7 @@ def ensure_counterparty_trade_tables():
         id SERIAL PRIMARY KEY,
         counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
         created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+        driver_id INTEGER NULL REFERENCES users(id),
         created_at TIMESTAMP DEFAULT NOW(),
         total_amount FLOAT NOT NULL DEFAULT 0,
         paid_kaspi FLOAT NOT NULL DEFAULT 0,
@@ -413,6 +414,7 @@ def ensure_counterparty_trade_tables():
             id SERIAL PRIMARY KEY,
             counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
             created_by_admin_id INTEGER NOT NULL REFERENCES users(id),
+            driver_id INTEGER NULL REFERENCES users(id),
             created_at TIMESTAMP DEFAULT NOW(),
             total_amount FLOAT NOT NULL DEFAULT 0,
             paid_kaspi FLOAT NOT NULL DEFAULT 0,
@@ -457,6 +459,26 @@ def ensure_counterparty_trade_tables():
 
 ensure_counterparty_columns()
 ensure_counterparty_trade_tables()
+
+
+def ensure_counterparty_sales_driver_column():
+    inspector = inspect(engine)
+    try:
+        columns = {column["name"] for column in inspector.get_columns("counterparty_sales")}
+    except Exception:
+        return
+
+    if "driver_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE counterparty_sales ADD COLUMN IF NOT EXISTS "
+                    "driver_id INTEGER NULL REFERENCES users(id)"
+                )
+            )
+
+
+ensure_counterparty_sales_driver_column()
 
 app = FastAPI(title="Confectionery Management System")
 
@@ -3648,6 +3670,98 @@ def _serialize_counterparty_sale(sale: models.CounterpartySale) -> schemas.Count
     )
 
 
+def _build_counterparty_sale_print_html(sale: models.CounterpartySale, include_auto_print: bool) -> str:
+    counterparty = sale.counterparty
+    rows_html = ""
+    for index, item in enumerate(sale.items, start=1):
+        rows_html += f"""
+        <tr>
+          <td>{index}</td>
+          <td>{item.product.name if item.product else ""}</td>
+          <td>{item.quantity}</td>
+          <td>{item.price_at_time:.2f}</td>
+          <td>{item.line_total:.2f}</td>
+        </tr>
+        """
+
+    total_due = float(sale.total_amount + sale.old_debt)
+    auto_print_script = "<script>window.onload = () => window.print();</script>" if include_auto_print else ""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Продажа #{sale.id}</title>
+        <style>
+          @page {{ size: A4; margin: 16mm; }}
+          body {{ font-family: Arial, sans-serif; color: #111; }}
+          h1 {{ margin: 0 0 8px; font-size: 20px; }}
+          .section {{ margin-bottom: 16px; display: flex; justify-content: space-between; gap: 24px; }}
+          .counterparty {{ text-align: right; }}
+          .manufacturer input {{
+            width: 320px;
+            border: none;
+            border-bottom: 1px solid #333;
+            padding: 4px 2px;
+            font-size: 14px;
+          }}
+          table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+          th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+          th {{ background: #f4f4f4; }}
+          .totals {{ margin-top: 12px; display: grid; gap: 4px; }}
+          .totals div {{ font-size: 14px; }}
+          @media print {{
+            input {{ outline: none; }}
+          }}
+        </style>
+      </head>
+      <body>
+        <h1>Накладная №{sale.id}</h1>
+        <div class="section">
+          <div class="manufacturer">
+            <div><strong>Название фирмы изготовления:</strong></div>
+            <input id="manufacturer" placeholder="Название фирмы изготовления" />
+          </div>
+          <div class="counterparty">
+            <div>{counterparty.name}</div>
+            <div>{counterparty.company or ""}</div>
+            <div>{counterparty.address or ""}</div>
+            <div>{counterparty.phone or ""}</div>
+          </div>
+        </div>
+        <div class="section">
+          <div><strong>Дата:</strong> {sale.created_at}</div>
+          <div><strong>Номер:</strong> {sale.id}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>Наименование</th>
+              <th>Кол-во</th>
+              <th>Цена</th>
+              <th>Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows_html}
+          </tbody>
+        </table>
+        <div class="totals">
+          <div><strong>Сумма продажи:</strong> {sale.total_amount:.2f}</div>
+          <div><strong>Оплачено (Kaspi):</strong> {sale.paid_kaspi:.2f}</div>
+          <div><strong>Оплачено (Наличные):</strong> {sale.paid_cash:.2f}</div>
+          <div><strong>Оплачено всего:</strong> {sale.paid_total:.2f}</div>
+          <div><strong>Долг до продажи:</strong> {sale.old_debt:.2f}</div>
+          <div><strong>Итого к оплате:</strong> {total_due:.2f}</div>
+          <div><strong>Долг после продажи:</strong> {sale.debt_after:.2f}</div>
+        </div>
+        {auto_print_script}
+      </body>
+    </html>
+    """
+
+
 @app.get("/admin/counterparties", response_model=List[schemas.CounterpartyOut])
 def list_counterparties(
     search: Optional[str] = Query(None),
@@ -3862,6 +3976,16 @@ def create_counterparty_sale(
     if not counterparty:
         raise HTTPException(status_code=404, detail="Контрагент не найден")
 
+    driver_id = payload.driver_id
+    if driver_id is not None:
+        driver = (
+            db.query(models.User)
+            .filter(models.User.id == driver_id, models.User.role == "manager")
+            .first()
+        )
+        if not driver:
+            raise HTTPException(status_code=404, detail="Водитель не найден")
+
     product_ids = [item.product_id for item in payload.items]
     products = (
         db.query(models.Product)
@@ -3921,6 +4045,7 @@ def create_counterparty_sale(
     sale = models.CounterpartySale(
         counterparty_id=counterparty.id,
         created_by_admin_id=current_user.id,
+        driver_id=driver_id,
         total_amount=float(total_amount),
         paid_kaspi=float(paid_kaspi),
         paid_cash=float(paid_cash),
@@ -3957,97 +4082,30 @@ def print_counterparty_sale(
     if not sale:
         raise HTTPException(status_code=404, detail="Продажа не найдена")
 
-    counterparty = sale.counterparty
-    rows_html = ""
-    for index, item in enumerate(sale.items, start=1):
-        rows_html += f"""
-        <tr>
-          <td>{index}</td>
-          <td>{item.product.name if item.product else ""}</td>
-          <td>{item.quantity}</td>
-          <td>{item.price_at_time:.2f}</td>
-          <td>{item.line_total:.2f}</td>
-        </tr>
-        """
-
-    total_due = float(sale.total_amount + sale.old_debt)
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="ru">
-      <head>
-        <meta charset="UTF-8" />
-        <title>Продажа #{sale.id}</title>
-        <style>
-          @page {{ size: A4; margin: 16mm; }}
-          body {{ font-family: Arial, sans-serif; color: #111; }}
-          h1 {{ margin: 0 0 8px; font-size: 20px; }}
-          .section {{ margin-bottom: 16px; display: flex; justify-content: space-between; gap: 24px; }}
-          .counterparty {{ text-align: right; }}
-          .manufacturer input {{
-            width: 320px;
-            border: none;
-            border-bottom: 1px solid #333;
-            padding: 4px 2px;
-            font-size: 14px;
-          }}
-          table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
-          th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-          th {{ background: #f4f4f4; }}
-          .totals {{ margin-top: 12px; display: grid; gap: 4px; }}
-          .totals div {{ font-size: 14px; }}
-          @media print {{
-            input {{ outline: none; }}
-          }}
-        </style>
-      </head>
-      <body>
-        <h1>Накладная №{sale.id}</h1>
-        <div class="section">
-          <div class="manufacturer">
-            <div><strong>Название фирмы изготовления:</strong></div>
-            <input id="manufacturer" placeholder="Название фирмы изготовления" />
-          </div>
-          <div class="counterparty">
-            <div>{counterparty.name}</div>
-            <div>{counterparty.company or ""}</div>
-            <div>{counterparty.address or ""}</div>
-            <div>{counterparty.phone or ""}</div>
-          </div>
-        </div>
-        <div class="section">
-          <div><strong>Дата:</strong> {sale.created_at}</div>
-          <div><strong>Номер:</strong> {sale.id}</div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>№</th>
-              <th>Наименование</th>
-              <th>Кол-во</th>
-              <th>Цена</th>
-              <th>Сумма</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows_html}
-          </tbody>
-        </table>
-        <div class="totals">
-          <div><strong>Сумма продажи:</strong> {sale.total_amount:.2f}</div>
-          <div><strong>Оплачено (Kaspi):</strong> {sale.paid_kaspi:.2f}</div>
-          <div><strong>Оплачено (Наличные):</strong> {sale.paid_cash:.2f}</div>
-          <div><strong>Оплачено всего:</strong> {sale.paid_total:.2f}</div>
-          <div><strong>Долг до продажи:</strong> {sale.old_debt:.2f}</div>
-          <div><strong>Итого к оплате:</strong> {total_due:.2f}</div>
-          <div><strong>Долг после продажи:</strong> {sale.debt_after:.2f}</div>
-        </div>
-        <script>
-          window.onload = () => window.print();
-        </script>
-      </body>
-    </html>
-    """
+    html = _build_counterparty_sale_print_html(sale, include_auto_print=True)
     return Response(content=html, media_type="text/html")
+
+
+@app.get("/admin/counterparty-sales/{sale_id}/print-html")
+def print_counterparty_sale_html(
+    sale_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    sale = (
+        db.query(models.CounterpartySale)
+        .options(joinedload(models.CounterpartySale.items).joinedload(models.CounterpartySaleItem.product))
+        .options(joinedload(models.CounterpartySale.counterparty))
+        .filter(models.CounterpartySale.id == sale_id)
+        .first()
+    )
+    if not sale:
+        raise HTTPException(status_code=404, detail="Продажа не найдена")
+
+    html = _build_counterparty_sale_print_html(sale, include_auto_print=False)
+    return {"html": html}
 
 
 @app.get("/admin/sales-orders", response_model=List[schemas.SalesOrderListItem])
@@ -4349,6 +4407,91 @@ def print_sales_order(
     </html>
     """
     return Response(content=html, media_type="text/html")
+
+
+@app.get("/admin/counterparty-sales-report", response_model=schemas.CounterpartySalesReport)
+def counterparty_sales_report(
+    counterparty_id: Optional[int] = Query(None),
+    driver_id: Optional[int] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_admin(current_user)
+
+    almaty_tz = timezone(timedelta(hours=6))
+    now_local = datetime.now(almaty_tz)
+
+    if date_from is None and date_to is None:
+        date_to = now_local.date()
+        date_from = (now_local - timedelta(days=30)).date()
+    if date_from is None:
+        date_from = (now_local - timedelta(days=30)).date()
+    if date_to is None:
+        date_to = now_local.date()
+
+    start_local = datetime.combine(date_from, time_type.min).replace(tzinfo=almaty_tz)
+    end_local = datetime.combine(date_to, time_type.max).replace(tzinfo=almaty_tz)
+    start_dt = start_local.astimezone(timezone.utc)
+    end_dt = end_local.astimezone(timezone.utc)
+
+    query = (
+        db.query(models.CounterpartySale)
+        .options(joinedload(models.CounterpartySale.counterparty))
+        .options(joinedload(models.CounterpartySale.driver))
+        .filter(models.CounterpartySale.created_at >= start_dt)
+        .filter(models.CounterpartySale.created_at <= end_dt)
+    )
+
+    if counterparty_id:
+        query = query.filter(models.CounterpartySale.counterparty_id == counterparty_id)
+    if driver_id:
+        query = query.filter(models.CounterpartySale.driver_id == driver_id)
+
+    sales = query.order_by(models.CounterpartySale.created_at.desc()).all()
+
+    totals = {
+        "sales_total": 0.0,
+        "paid_cash_total": 0.0,
+        "paid_kaspi_total": 0.0,
+        "paid_total": 0.0,
+        "debt_total": 0.0,
+    }
+    results: list[schemas.CounterpartySalesReportRow] = []
+
+    for sale in sales:
+        total_due = float(sale.total_amount + sale.old_debt)
+        debt_for_sale = max(total_due - float(sale.paid_total), 0.0)
+
+        totals["sales_total"] += float(sale.total_amount)
+        totals["paid_cash_total"] += float(sale.paid_cash)
+        totals["paid_kaspi_total"] += float(sale.paid_kaspi)
+        totals["paid_total"] += float(sale.paid_total)
+        totals["debt_total"] += debt_for_sale
+
+        driver_name = sale.driver.full_name if sale.driver else None
+
+        results.append(
+            schemas.CounterpartySalesReportRow(
+                id=sale.id,
+                date=sale.created_at,
+                counterparty_id=sale.counterparty_id,
+                counterparty_name=sale.counterparty.name if sale.counterparty else "",
+                driver_id=sale.driver_id,
+                driver_name=driver_name,
+                total=float(sale.total_amount),
+                paid_cash=float(sale.paid_cash),
+                paid_kaspi=float(sale.paid_kaspi),
+                paid_total=float(sale.paid_total),
+                debt_for_sale=debt_for_sale,
+            )
+        )
+
+    return schemas.CounterpartySalesReport(
+        totals=schemas.CounterpartySalesReportTotals(**totals),
+        sales=results,
+    )
 
 
 @app.get("/admin/warehouse-settings", response_model=schemas.WarehouseSettingsOut)

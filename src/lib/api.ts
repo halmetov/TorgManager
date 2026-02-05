@@ -431,6 +431,10 @@ class ApiClient {
     return this.get(`/admin/counterparty-sales/${id}`);
   }
 
+  async getAdminCounterpartySalePrintHtml(id: number) {
+    return this.get(`/admin/counterparty-sales/${id}/print-html`);
+  }
+
   async createAdminCounterpartySale(data: any) {
     return this.post('/admin/counterparty-sales', data);
   }
@@ -443,9 +447,19 @@ class ApiClient {
     return this.put('/admin/warehouse-settings', data);
   }
 
-  async getCounterpartyReport(params: { counterparty_id: number; date_from?: string; date_to?: string }) {
+  async getCounterpartySalesReport(params: {
+    counterparty_id?: number;
+    driver_id?: number;
+    date_from?: string;
+    date_to?: string;
+  }) {
     const searchParams = new URLSearchParams();
-    searchParams.set('counterparty_id', String(params.counterparty_id));
+    if (params.counterparty_id !== undefined) {
+      searchParams.set('counterparty_id', String(params.counterparty_id));
+    }
+    if (params.driver_id !== undefined) {
+      searchParams.set('driver_id', String(params.driver_id));
+    }
     if (params.date_from) {
       searchParams.set('date_from', params.date_from);
     }
@@ -453,7 +467,7 @@ class ApiClient {
       searchParams.set('date_to', params.date_to);
     }
     const query = searchParams.toString();
-    return this.get(`/admin/counterparty-report?${query}`);
+    return this.get(`/admin/counterparty-sales-report${query ? `?${query}` : ''}`);
   }
 
   async getCounterpartyDebts() {
