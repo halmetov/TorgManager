@@ -3901,18 +3901,21 @@ def create_counterparty_sale(
 
     paid_kaspi = Decimal(str(payload.payment.kaspi))
     paid_cash = Decimal(str(payload.payment.cash))
-    paid_debt = Decimal(str(payload.payment.debt))
-    paid_sum = paid_kaspi + paid_cash + paid_debt
-    if abs(paid_sum - total_amount) > Decimal("0.01"):
-        raise HTTPException(status_code=400, detail="Сумма оплаты должна равняться сумме продажи")
+    paid_sum = paid_kaspi + paid_cash
 
     for item in payload.items:
         product = product_map[item.product_id]
         product.quantity = int(Decimal(str(product.quantity)) - Decimal(str(item.quantity)))
 
     old_debt = Decimal(str(counterparty.debt or 0))
-    new_debt_added = paid_debt
-    debt_after = old_debt + new_debt_added
+    total_due = old_debt + total_amount
+    if paid_sum - total_due > Decimal("0.01"):
+        raise HTTPException(
+            status_code=400,
+            detail="Сумма оплаты превышает сумму продажи + текущий долг",
+        )
+    debt_after = total_due - paid_sum
+    new_debt_added = max(total_amount - paid_sum, Decimal("0"))
     counterparty.debt = float(debt_after)
 
     sale = models.CounterpartySale(
@@ -3921,8 +3924,8 @@ def create_counterparty_sale(
         total_amount=float(total_amount),
         paid_kaspi=float(paid_kaspi),
         paid_cash=float(paid_cash),
-        paid_debt=float(paid_debt),
-        paid_total=float(paid_kaspi + paid_cash),
+        paid_debt=0.0,
+        paid_total=float(paid_sum),
         new_debt_added=float(new_debt_added),
         old_debt=float(old_debt),
         debt_after=float(debt_after),
@@ -3967,6 +3970,7 @@ def print_counterparty_sale(
         </tr>
         """
 
+    total_due = float(sale.total_amount + sale.old_debt)
     html = f"""
     <!DOCTYPE html>
     <html lang="ru">
@@ -3974,33 +3978,40 @@ def print_counterparty_sale(
         <meta charset="UTF-8" />
         <title>Продажа #{sale.id}</title>
         <style>
-          body {{ font-family: Arial, sans-serif; padding: 24px; color: #111; }}
-          h1, h2 {{ margin: 0 0 8px; }}
-          .section {{ margin-bottom: 16px; display: flex; justify-content: space-between; }}
+          @page {{ size: A4; margin: 16mm; }}
+          body {{ font-family: Arial, sans-serif; color: #111; }}
+          h1 {{ margin: 0 0 8px; font-size: 20px; }}
+          .section {{ margin-bottom: 16px; display: flex; justify-content: space-between; gap: 24px; }}
           .counterparty {{ text-align: right; }}
+          .manufacturer input {{
+            width: 320px;
+            border: none;
+            border-bottom: 1px solid #333;
+            padding: 4px 2px;
+            font-size: 14px;
+          }}
           table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
           th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
           th {{ background: #f4f4f4; }}
-          .totals {{ margin-top: 12px; }}
-          .totals div {{ margin-bottom: 4px; }}
+          .totals {{ margin-top: 12px; display: grid; gap: 4px; }}
+          .totals div {{ font-size: 14px; }}
           @media print {{
-            button {{ display: none; }}
+            input {{ outline: none; }}
           }}
         </style>
       </head>
       <body>
         <h1>Накладная №{sale.id}</h1>
         <div class="section">
-          <div>
-            <strong>Название фирмы изготовления:</strong>
-            <div>______________________________</div>
+          <div class="manufacturer">
+            <div><strong>Название фирмы изготовления:</strong></div>
+            <input id="manufacturer" placeholder="Название фирмы изготовления" />
           </div>
           <div class="counterparty">
             <div>{counterparty.name}</div>
             <div>{counterparty.company or ""}</div>
             <div>{counterparty.address or ""}</div>
             <div>{counterparty.phone or ""}</div>
-            <div>Долг после продажи: {sale.debt_after:.2f}</div>
           </div>
         </div>
         <div class="section">
@@ -4022,10 +4033,13 @@ def print_counterparty_sale(
           </tbody>
         </table>
         <div class="totals">
-          <div><strong>Сумма:</strong> {sale.total_amount:.2f}</div>
-          <div><strong>Kaspi:</strong> {sale.paid_kaspi:.2f}</div>
-          <div><strong>Наличные:</strong> {sale.paid_cash:.2f}</div>
-          <div><strong>В долг:</strong> {sale.paid_debt:.2f}</div>
+          <div><strong>Сумма продажи:</strong> {sale.total_amount:.2f}</div>
+          <div><strong>Оплачено (Kaspi):</strong> {sale.paid_kaspi:.2f}</div>
+          <div><strong>Оплачено (Наличные):</strong> {sale.paid_cash:.2f}</div>
+          <div><strong>Оплачено всего:</strong> {sale.paid_total:.2f}</div>
+          <div><strong>Долг до продажи:</strong> {sale.old_debt:.2f}</div>
+          <div><strong>Итого к оплате:</strong> {total_due:.2f}</div>
+          <div><strong>Долг после продажи:</strong> {sale.debt_after:.2f}</div>
         </div>
         <script>
           window.onload = () => window.print();

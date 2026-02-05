@@ -64,6 +64,7 @@ interface SalesItemForm {
   id: string;
   product_id?: number;
   product_name?: string;
+  available?: number;
   quantity: string;
   price: string;
   confirmed: boolean;
@@ -81,7 +82,7 @@ export default function AdminSales() {
   const [counterpartyId, setCounterpartyId] = useState<string>("");
   const [items, setItems] = useState<SalesItemForm[]>([]);
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [paymentForm, setPaymentForm] = useState({ kaspi: "", cash: "", debt: "" });
+  const [paymentForm, setPaymentForm] = useState({ kaspi: "", cash: "" });
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -151,7 +152,7 @@ export default function AdminSales() {
     mutationFn: (payload: {
       counterparty_id: number;
       items: { product_id: number; quantity: number; price: number }[];
-      payment: { kaspi: number; cash: number; debt: number };
+      payment: { kaspi: number; cash: number };
     }) => api.createAdminCounterpartySale(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["counterparty-sales"] });
@@ -160,7 +161,7 @@ export default function AdminSales() {
       setItems([]);
       setCounterpartyId("");
       setPaymentOpen(false);
-      setPaymentForm({ kaspi: "", cash: "", debt: "" });
+      setPaymentForm({ kaspi: "", cash: "" });
     },
     onError: (mutationError: any) => {
       const message = mutationError?.message ?? "Не удалось создать продажу";
@@ -181,6 +182,26 @@ export default function AdminSales() {
     const list = Array.isArray(counterparties) ? (counterparties as CounterpartyOption[]) : [];
     return list.find((counterparty) => String(counterparty.id) === counterpartyId) ?? null;
   }, [counterparties, counterpartyId]);
+
+  const oldDebt = selectedCounterparty?.debt ?? 0;
+  const totalDue = totalAmount + oldDebt;
+  const paymentSum = useMemo(() => {
+    const kaspi = Number(paymentForm.kaspi);
+    const cash = Number(paymentForm.cash);
+    if (Number.isNaN(kaspi) || Number.isNaN(cash)) {
+      return 0;
+    }
+    return kaspi + cash;
+  }, [paymentForm.cash, paymentForm.kaspi]);
+
+  const hasStockIssue = useMemo(() => {
+    return items.some((item) => {
+      if (!item.product_id) return false;
+      const available = item.available ?? 0;
+      const quantity = Number(item.quantity);
+      return !Number.isNaN(quantity) && quantity > available;
+    });
+  }, [items]);
 
   const cancelScheduledSearch = (abortOngoing = false) => {
     if (searchTimeoutRef.current) {
@@ -263,6 +284,8 @@ export default function AdminSales() {
         const existing = updated[existingIndex];
         updated[existingIndex] = {
           ...existing,
+          available: option.quantity,
+          price: String(option.price ?? existing.price ?? 0),
           quantity: String(Number(existing.quantity || 0) + 1),
         };
         updated.splice(index, 1);
@@ -274,8 +297,9 @@ export default function AdminSales() {
               ...item,
               product_id: option.id,
               product_name: option.name,
+              available: option.quantity,
               quantity: item.quantity || "1",
-              price: item.price || String(option.price ?? 0),
+              price: String(option.price ?? 0),
             }
           : item
       );
@@ -327,25 +351,28 @@ export default function AdminSales() {
       toast({ title: "Ошибка", description: "Проверьте товары и цены", variant: "destructive" });
       return;
     }
-    setPaymentForm({ kaspi: totalAmount.toFixed(2), cash: "0", debt: "0" });
+    if (hasStockIssue) {
+      toast({ title: "Ошибка", description: "Не хватает товара на складе", variant: "destructive" });
+      return;
+    }
+    setPaymentForm({ kaspi: totalAmount.toFixed(2), cash: "0" });
     setPaymentOpen(true);
   };
 
   const handleSubmitSale = () => {
     const kaspi = Number(paymentForm.kaspi);
     const cash = Number(paymentForm.cash);
-    const debt = Number(paymentForm.debt);
 
-    if ([kaspi, cash, debt].some((value) => Number.isNaN(value) || value < 0)) {
+    if ([kaspi, cash].some((value) => Number.isNaN(value) || value < 0)) {
       toast({ title: "Ошибка", description: "Введите корректные суммы", variant: "destructive" });
       return;
     }
 
-    const paymentSum = kaspi + cash + debt;
-    if (Math.abs(paymentSum - totalAmount) > 0.01) {
+    const paymentSum = kaspi + cash;
+    if (paymentSum - totalDue > 0.01) {
       toast({
         title: "Ошибка",
-        description: "Сумма оплаты должна равняться сумме продажи",
+        description: "Сумма оплаты превышает сумму продажи + текущий долг",
         variant: "destructive",
       });
       return;
@@ -362,7 +389,7 @@ export default function AdminSales() {
     createMutation.mutate({
       counterparty_id: Number(counterpartyId),
       items: payloadItems,
-      payment: { kaspi, cash, debt },
+      payment: { kaspi, cash },
     });
   };
 
@@ -413,6 +440,9 @@ export default function AdminSales() {
             </div>
             <div className="rounded-md border p-3 text-sm">
               Текущий долг: <span className="font-semibold">{(selectedCounterparty?.debt ?? 0).toFixed(2)} ₸</span>
+              <div className="mt-1 text-muted-foreground">
+                К оплате всего: <span className="font-semibold text-foreground">{totalDue.toFixed(2)} ₸</span>
+              </div>
             </div>
           </div>
 
@@ -448,6 +478,11 @@ export default function AdminSales() {
                     const price = Number(item.price);
                     const lineTotal =
                       Number.isNaN(quantity) || Number.isNaN(price) ? 0 : Math.max(quantity, 0) * Math.max(price, 0);
+                    const available = item.available ?? 0;
+                    const hasInsufficientStock =
+                      item.product_id &&
+                      !Number.isNaN(quantity) &&
+                      quantity > available;
 
                     return (
                       <TableRow key={item.id}>
@@ -499,6 +534,14 @@ export default function AdminSales() {
                               </Command>
                             </PopoverContent>
                           </Popover>
+                          {item.product_id ? (
+                            <div className="mt-2 space-y-1 text-xs">
+                              <div className="text-muted-foreground">Доступно: {available}</div>
+                              {hasInsufficientStock ? (
+                                <div className="text-destructive">Не хватает на складе</div>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <Input
@@ -540,7 +583,7 @@ export default function AdminSales() {
             <div className="text-sm text-muted-foreground">
               Итого: <span className="font-semibold text-foreground">{totalAmount.toFixed(2)} ₸</span>
             </div>
-            <Button onClick={openPayment} disabled={createMutation.isPending}>
+            <Button onClick={openPayment} disabled={createMutation.isPending || hasStockIssue}>
               Отправить / Сохранить
             </Button>
           </div>
@@ -618,6 +661,14 @@ export default function AdminSales() {
               </div>
             </div>
             <div>
+              <Label>Старый долг</Label>
+              <div className="h-10 flex items-center rounded-md border px-3 text-sm">{oldDebt.toFixed(2)} ₸</div>
+            </div>
+            <div>
+              <Label>Итого к оплате</Label>
+              <div className="h-10 flex items-center rounded-md border px-3 text-sm">{totalDue.toFixed(2)} ₸</div>
+            </div>
+            <div>
               <Label htmlFor="payment-kaspi">Kaspi</Label>
               <Input
                 id="payment-kaspi"
@@ -639,18 +690,14 @@ export default function AdminSales() {
                 onChange={(event) => setPaymentForm({ ...paymentForm, cash: event.target.value })}
               />
             </div>
-            <div>
-              <Label htmlFor="payment-debt">В долг</Label>
-              <Input
-                id="payment-debt"
-                type="number"
-                min="0"
-                step="0.01"
-                value={paymentForm.debt}
-                onChange={(event) => setPaymentForm({ ...paymentForm, debt: event.target.value })}
-              />
+            <div className="text-sm text-muted-foreground">
+              Останется в долг:{" "}
+              <span className="font-semibold text-foreground">{Math.max(totalDue - paymentSum, 0).toFixed(2)} ₸</span>
             </div>
-            <Button onClick={handleSubmitSale} disabled={createMutation.isPending}>
+            <Button
+              onClick={handleSubmitSale}
+              disabled={createMutation.isPending || paymentSum > totalDue}
+            >
               Провести продажу
             </Button>
           </div>
@@ -701,7 +748,7 @@ export default function AdminSales() {
                   <div>Сумма: {detail.total_amount.toFixed(2)} ₸</div>
                   <div>Kaspi: {detail.paid_kaspi.toFixed(2)} ₸</div>
                   <div>Наличные: {detail.paid_cash.toFixed(2)} ₸</div>
-                  <div>В долг: {detail.paid_debt.toFixed(2)} ₸</div>
+                  <div>Оплачено всего: {detail.paid_total.toFixed(2)} ₸</div>
                 </div>
                 <div className="space-y-1 text-sm">
                   <div>Старый долг: {detail.old_debt.toFixed(2)} ₸</div>

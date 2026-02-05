@@ -162,7 +162,6 @@ class SalesOrderListItem(BaseModel):
 class CounterpartySalePayment(BaseModel):
     kaspi: condecimal(ge=0) = 0
     cash: condecimal(ge=0) = 0
-    debt: condecimal(ge=0) = 0
 
 
 class CounterpartySaleItemCreate(BaseModel):
